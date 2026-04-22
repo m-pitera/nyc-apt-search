@@ -211,7 +211,7 @@ function csvEscape(value: unknown): string {
 }
 
 function createCsv(listings: ListingView[]): string {
-  const ratingHeaders = ["bb-lizard rating", "bb-crab rating", "Average rating"];
+  const ratingHeaders = ["bb-lizard rating", "bb-lizard comment", "bb-crab rating", "bb-crab comment", "Average rating"];
   const headers = [...fieldLabels.map(([, label]) => label), ...ratingHeaders];
   const rows = listings.map((listing) =>
     [
@@ -221,7 +221,9 @@ function createCsv(listings: ListingView[]): string {
       return String(listing[key] ?? "");
       }),
       Number(listing.bbLizardRating) ? String(listing.bbLizardRating) : "",
+      listing.bbLizardComment || "",
       Number(listing.bbCrabRating) ? String(listing.bbCrabRating) : "",
+      listing.bbCrabComment || "",
       averageRating(listing),
     ],
   );
@@ -526,11 +528,26 @@ function RatingCell({
 }: {
   listing: ListingView;
   disabled: boolean;
-  onChange: (id: number, values: { bbLizardRating: number; bbCrabRating: number }) => void;
+  onChange: (
+    id: number,
+    values: {
+      bbLizardRating: number;
+      bbCrabRating: number;
+      bbLizardComment?: string;
+      bbCrabComment?: string;
+    },
+  ) => void;
 }) {
   const lizard = Number(listing.bbLizardRating) || 0;
   const crab = Number(listing.bbCrabRating) || 0;
   const average = averageRating(listing);
+  const [lizardComment, setLizardComment] = useState(listing.bbLizardComment || "");
+  const [crabComment, setCrabComment] = useState(listing.bbCrabComment || "");
+
+  useEffect(() => {
+    setLizardComment(listing.bbLizardComment || "");
+    setCrabComment(listing.bbCrabComment || "");
+  }, [listing.bbCrabComment, listing.bbLizardComment]);
 
   return (
     <div className={`space-y-3 ${disabled ? "pointer-events-none opacity-60" : ""}`} data-testid={`cell-rating-${listing.id}`}>
@@ -546,12 +563,51 @@ function RatingCell({
         onChange={(value) => onChange(listing.id, { bbLizardRating: value, bbCrabRating: crab })}
         testId={`rating-lizard-${listing.id}`}
       />
+      <div className="space-y-1">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">bb-lizard comment</p>
+        <Textarea
+          value={lizardComment}
+          onChange={(event) => setLizardComment(event.target.value)}
+          rows={2}
+          className="min-h-16 resize-y text-xs"
+          placeholder="Add bb-lizard notes..."
+          data-testid={`textarea-lizard-comment-${listing.id}`}
+        />
+      </div>
       <RatingPicker
         label="bb-crab"
         value={crab}
         onChange={(value) => onChange(listing.id, { bbLizardRating: lizard, bbCrabRating: value })}
         testId={`rating-crab-${listing.id}`}
       />
+      <div className="space-y-1">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">bb-crab comment</p>
+        <Textarea
+          value={crabComment}
+          onChange={(event) => setCrabComment(event.target.value)}
+          rows={2}
+          className="min-h-16 resize-y text-xs"
+          placeholder="Add bb-crab notes..."
+          data-testid={`textarea-crab-comment-${listing.id}`}
+        />
+      </div>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="w-full"
+        onClick={() =>
+          onChange(listing.id, {
+            bbLizardRating: lizard,
+            bbCrabRating: crab,
+            bbLizardComment: lizardComment,
+            bbCrabComment: crabComment,
+          })
+        }
+        data-testid={`button-save-rating-comments-${listing.id}`}
+      >
+        Save comments
+      </Button>
     </div>
   );
 }
@@ -687,22 +743,38 @@ function ListingTable({
       id,
       bbLizardRating,
       bbCrabRating,
+      bbLizardComment,
+      bbCrabComment,
     }: {
       id: number;
       bbLizardRating: number;
       bbCrabRating: number;
+      bbLizardComment?: string;
+      bbCrabComment?: string;
     }) => {
       const response = await apiRequest("PATCH", `/api/listings/${id}`, {
         bbLizardRating,
         bbCrabRating,
+        ...(bbLizardComment !== undefined ? { bbLizardComment } : {}),
+        ...(bbCrabComment !== undefined ? { bbCrabComment } : {}),
       });
       return (await response.json()) as ListingView;
     },
-    onMutate: async ({ id, bbLizardRating, bbCrabRating }) => {
+    onMutate: async ({ id, bbLizardRating, bbCrabRating, bbLizardComment, bbCrabComment }) => {
       await queryClient.cancelQueries({ queryKey: ["/api/listings"] });
       const previous = queryClient.getQueryData<ListingView[]>(["/api/listings"]);
       queryClient.setQueryData<ListingView[]>(["/api/listings"], (current = []) =>
-        current.map((listing) => (listing.id === id ? { ...listing, bbLizardRating, bbCrabRating } : listing)),
+        current.map((listing) =>
+          listing.id === id
+            ? {
+                ...listing,
+                bbLizardRating,
+                bbCrabRating,
+                ...(bbLizardComment !== undefined ? { bbLizardComment } : {}),
+                ...(bbCrabComment !== undefined ? { bbCrabComment } : {}),
+              }
+            : listing,
+        ),
       );
       return { previous };
     },
@@ -848,7 +920,7 @@ function ListingTable({
             <Table className="min-w-[3480px] table-fixed">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[260px] bg-muted/40 px-2 py-2 text-[10px] font-semibold uppercase leading-tight tracking-wide">
+                  <TableHead className="w-[320px] bg-muted/40 px-2 py-2 text-[10px] font-semibold uppercase leading-tight tracking-wide">
                     Ratings
                   </TableHead>
                   {fieldLabels.map(([key, label]) => (

@@ -31,6 +31,8 @@ export const listings = sqliteTable("listings", {
   longitude: text("longitude").notNull().default(""),
   bbLizardRating: integer("bb_lizard_rating").notNull().default(0),
   bbCrabRating: integer("bb_crab_rating").notNull().default(0),
+  bbLizardComment: text("bb_lizard_comment").notNull().default(""),
+  bbCrabComment: text("bb_crab_comment").notNull().default(""),
   rating: integer("rating").notNull().default(0),
   parseStatus: text("parse_status").notNull().default(""),
   createdAt: text("created_at").notNull().default(""),

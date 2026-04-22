@@ -10,7 +10,7 @@ A small password-protected apartment tracking app for importing StreetEasy listi
   - 853 Broadway, New York, NY 10003
   - 55 Hudson Yards, New York, NY 10001
 - Edit listing details directly in the table.
-- Rate each listing with separate `bb-lizard` and `bb-crab` ratings.
+- Rate and comment on each listing with separate `bb-lizard` and `bb-crab` sections.
 - Sort and filter listings by neighborhood, rent, commute, laundry, date posted, year built, and average rating.
 - Export visible rows to CSV.
 - Password-gated UI with optional remember-me token.
