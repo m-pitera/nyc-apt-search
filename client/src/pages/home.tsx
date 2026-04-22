@@ -2,7 +2,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowDownToLine,
-  ArrowUpDown,
   Check,
   ExternalLink,
   Home,
@@ -14,7 +13,6 @@ import {
   Search,
   Sun,
   Trash2,
-  X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -41,13 +39,12 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -84,6 +81,18 @@ type SortKey =
   | "hasInBuildingLaundry";
 type SortDirection = "asc" | "desc";
 type LaundryFilter = "any" | "yes" | "no";
+type RatingPatch = {
+  bbLizardRating: number;
+  bbLizardLocationRating: number;
+  bbLizardLayoutRating: number;
+  bbLizardOverallRating: number;
+  bbCrabRating: number;
+  bbCrabLocationRating: number;
+  bbCrabLayoutRating: number;
+  bbCrabOverallRating: number;
+  bbLizardComment?: string;
+  bbCrabComment?: string;
+};
 
 type FilterState = {
   neighborhood: string;
@@ -131,31 +140,19 @@ const fieldLabels: Array<[DisplayFieldKey, string, FieldType]> = [
   ["contactPhone", "Contact phone", "text"],
 ];
 
-const columnWidths: Partial<Record<DisplayFieldKey, string>> = {
-  link: "w-[120px]",
-  neighborhood: "w-[140px]",
-  borough: "w-[120px]",
-  buildingTitle: "w-[180px]",
-  rent: "w-[100px]",
-  beds: "w-[80px]",
-  rooms: "w-[85px]",
-  roomsDesc: "w-[220px]",
-  bath: "w-[80px]",
-  sqFt: "w-[90px]",
-  pplxDist: "w-[120px]",
-  sevenTwoDist: "w-[120px]",
-  datePosted: "w-[180px]",
-  yearBuilt: "w-[100px]",
-  openRentalsCount: "w-[150px]",
-  listingStatus: "w-[130px]",
-  description: "w-[300px]",
-  amenities: "w-[220px]",
-  hasInUnitLaundry: "w-[130px]",
-  hasInBuildingLaundry: "w-[150px]",
-  contactName: "w-[160px]",
-  contactEmail: "w-[180px]",
-  contactPhone: "w-[150px]",
-};
+const sortOptions: Array<{ key: SortKey; direction: SortDirection; label: string }> = [
+  { key: "averageRating", direction: "desc", label: "Avg rating ↓" },
+  { key: "averageRating", direction: "asc", label: "Avg rating ↑" },
+  { key: "rent", direction: "asc", label: "Rent ↑" },
+  { key: "rent", direction: "desc", label: "Rent ↓" },
+  { key: "pplxDist", direction: "asc", label: "PPLX commute ↑" },
+  { key: "sevenTwoDist", direction: "asc", label: "P72 commute ↑" },
+  { key: "hasInUnitLaundry", direction: "desc", label: "In-unit laundry first" },
+  { key: "hasInBuildingLaundry", direction: "desc", label: "Building laundry first" },
+  { key: "datePosted", direction: "desc", label: "Date posted ↓" },
+  { key: "yearBuilt", direction: "desc", label: "Year built ↓" },
+  { key: "neighborhood", direction: "asc", label: "Neighborhood A-Z" },
+];
 
 function formatAverage(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
@@ -655,21 +652,7 @@ function RatingCell({
 }: {
   listing: ListingView;
   disabled: boolean;
-  onChange: (
-    id: number,
-    values: {
-      bbLizardRating: number;
-      bbLizardLocationRating: number;
-      bbLizardLayoutRating: number;
-      bbLizardOverallRating: number;
-      bbCrabRating: number;
-      bbCrabLocationRating: number;
-      bbCrabLayoutRating: number;
-      bbCrabOverallRating: number;
-      bbLizardComment?: string;
-      bbCrabComment?: string;
-    },
-  ) => Promise<unknown> | unknown;
+  onChange: (id: number, values: RatingPatch) => Promise<unknown> | unknown;
 }) {
   const average = averageRating(listing);
   const lizardAverage = personAverageRating(listing, "lizard");
@@ -815,6 +798,351 @@ function RatingCell({
   );
 }
 
+function MetricTile({
+  label,
+  value,
+  detail,
+  testId,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  testId: string;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-background px-3 py-2 shadow-sm" data-testid={testId}>
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="mt-1 text-sm font-semibold tabular-nums text-foreground">{value || "—"}</p>
+      {detail ? <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{detail}</p> : null}
+    </div>
+  );
+}
+
+function ExpandableComment({
+  comment,
+  testId,
+}: {
+  comment: string;
+  testId: string;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const trimmed = comment?.trim() || "";
+  const shouldCollapse = trimmed.length > 140;
+
+  if (!trimmed) {
+    return <p className="mt-3 text-xs leading-5 text-muted-foreground">No comment yet.</p>;
+  }
+
+  return (
+    <div className="mt-3 text-xs leading-5 text-muted-foreground" data-testid={testId}>
+      <p className={`whitespace-pre-wrap ${isExpanded || !shouldCollapse ? "" : "line-clamp-2"}`}>
+        “{trimmed}”
+      </p>
+      {shouldCollapse ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="mt-1 h-auto px-0 py-0 text-xs font-semibold text-primary hover:bg-transparent hover:text-primary"
+          onClick={() => setIsExpanded((value) => !value)}
+          data-testid={`${testId}-toggle`}
+        >
+          {isExpanded ? "Less" : "More"}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function RatingBreakdown({
+  label,
+  average,
+  location,
+  layout,
+  overall,
+  comment,
+  testId,
+}: {
+  label: string;
+  average: number;
+  location: number;
+  layout: number;
+  overall: number;
+  comment: string;
+  testId: string;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-muted/20 p-3" data-testid={testId}>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-semibold">{label}</p>
+        <Badge variant={average ? "default" : "outline"} className="tabular-nums">
+          {average ? formatAverage(average) : "—"}
+        </Badge>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+        <div className="rounded-md bg-background px-2 py-1.5">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Location</p>
+          <p className="font-semibold tabular-nums">{location || "—"}</p>
+        </div>
+        <div className="rounded-md bg-background px-2 py-1.5">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Layout</p>
+          <p className="font-semibold tabular-nums">{layout || "—"}</p>
+        </div>
+        <div className="rounded-md bg-background px-2 py-1.5">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Overall</p>
+          <p className="font-semibold tabular-nums">{overall || "—"}</p>
+        </div>
+      </div>
+      <ExpandableComment comment={comment} testId={`${testId}-comment`} />
+    </div>
+  );
+}
+
+function ListingEditDialog({
+  listing,
+  open,
+  draft,
+  isSaving,
+  onOpenChange,
+  onDraftChange,
+  onSave,
+}: {
+  listing: ListingView;
+  open: boolean;
+  draft: EditableListing | null;
+  isSaving: boolean;
+  onOpenChange: (open: boolean) => void;
+  onDraftChange: (key: keyof EditableListing, value: string | number | boolean) => void;
+  onSave: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] max-w-4xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Edit apartment details</DialogTitle>
+          <DialogDescription>
+            {listing.buildingTitle || listing.neighborhood || "Listing"}
+            {listing.rent ? ` · ${listing.rent}` : ""}
+          </DialogDescription>
+        </DialogHeader>
+        {draft ? (
+          <div className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              {fieldLabels.map(([key, label, type]) => (
+                <div key={key} className={type === "textarea" ? "md:col-span-2" : ""}>
+                  <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {label}
+                  </label>
+                  <EditableCell
+                    value={draft[key as keyof EditableListing] as string | number | boolean}
+                    type={type}
+                    testId={`input-${String(key)}-${listing.id}`}
+                    onChange={(value) => onDraftChange(key as keyof EditableListing, value)}
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid={`button-cancel-${listing.id}`}>
+                Cancel
+              </Button>
+              <Button type="button" disabled={isSaving} onClick={onSave} data-testid={`button-save-${listing.id}`}>
+                {isSaving ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Check className="mr-2 size-4" />}
+                Save details
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ListingCard({
+  listing,
+  isEditing,
+  draft,
+  ratingDisabled,
+  editSaving,
+  deletePending,
+  onRateChange,
+  onStartEditing,
+  onEditOpenChange,
+  onDraftChange,
+  onSaveEdit,
+  onDelete,
+}: {
+  listing: ListingView;
+  isEditing: boolean;
+  draft: EditableListing | null;
+  ratingDisabled: boolean;
+  editSaving: boolean;
+  deletePending: boolean;
+  onRateChange: (id: number, values: RatingPatch) => Promise<unknown> | unknown;
+  onStartEditing: (listing: ListingView) => void;
+  onEditOpenChange: (open: boolean) => void;
+  onDraftChange: (key: keyof EditableListing, value: string | number | boolean) => void;
+  onSaveEdit: () => void;
+  onDelete: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const average = averageRating(listing);
+  const lizardAverage = personAverageRating(listing, "lizard");
+  const crabAverage = personAverageRating(listing, "crab");
+  const laundrySummary =
+    listing.hasInUnitLaundry && listing.hasInBuildingLaundry
+      ? "Unit + building"
+      : listing.hasInUnitLaundry
+        ? "In-unit"
+        : listing.hasInBuildingLaundry
+          ? "Building"
+          : "Not listed";
+  const amenities = listing.amenities.slice(0, 6);
+
+  return (
+    <Card className="overflow-hidden border-card-border shadow-sm" data-testid={`row-listing-${listing.id}`}>
+      <CardContent className="p-4">
+        <div className="grid gap-4 lg:grid-cols-[1fr_160px]">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                  <p className="text-lg font-semibold tabular-nums text-primary" data-testid={`text-card-rent-${listing.id}`}>
+                    {listing.rent || "Rent —"}
+                  </p>
+                  <h3 className="truncate text-lg font-semibold tracking-tight" data-testid={`text-card-title-${listing.id}`}>
+                    {listing.buildingTitle || "Untitled listing"}
+                  </h3>
+                </div>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {[listing.neighborhood, listing.borough].filter(Boolean).join(" · ") || "Neighborhood unknown"}
+                </p>
+              </div>
+              <Badge variant={average ? "default" : "outline"} className="text-sm tabular-nums" data-testid={`text-card-average-${listing.id}`}>
+                Avg {average || "—"}
+              </Badge>
+            </div>
+
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              <MetricTile label="PPLX" value={listing.pplxDist || "—"} detail="853 Broadway" testId={`metric-pplx-${listing.id}`} />
+              <MetricTile label="P72" value={listing.sevenTwoDist || "—"} detail="55 Hudson Yards" testId={`metric-p72-${listing.id}`} />
+              <MetricTile label="Laundry" value={laundrySummary} detail={listing.hasInBuildingLaundry ? "Building ✓" : listing.hasInUnitLaundry ? "Unit ✓" : ""} testId={`metric-laundry-${listing.id}`} />
+              <MetricTile label="Posted" value={listing.datePosted || "—"} detail={listing.openRentalsCount ? `${listing.openRentalsCount} open rentals` : ""} testId={`metric-posted-${listing.id}`} />
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+              <Badge variant="secondary">Lizard {lizardAverage ? formatAverage(lizardAverage) : "—"}</Badge>
+              <Badge variant="secondary">Crab {crabAverage ? formatAverage(crabAverage) : "—"}</Badge>
+              {listing.rooms ? <Badge variant="outline">{listing.rooms} rooms</Badge> : null}
+              {listing.beds ? <Badge variant="outline">{listing.beds} beds</Badge> : null}
+              {listing.bath ? <Badge variant="outline">{listing.bath} bath</Badge> : null}
+              {listing.sqFt ? <Badge variant="outline">{listing.sqFt} sq ft</Badge> : null}
+              {listing.yearBuilt ? <Badge variant="outline">Built {listing.yearBuilt}</Badge> : null}
+            </div>
+
+            {amenities.length ? (
+              <div className="mt-3 flex flex-wrap gap-1.5" data-testid={`text-card-amenities-${listing.id}`}>
+                {amenities.map((amenity) => (
+                  <Badge key={amenity} variant="outline" className="bg-background text-[11px]">
+                    {amenity}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <RatingCell listing={listing} disabled={ratingDisabled} onChange={onRateChange} />
+            <Button type="button" variant="outline" size="sm" onClick={() => setExpanded((value) => !value)} data-testid={`button-toggle-card-${listing.id}`}>
+              {expanded ? "Less" : "More"}
+            </Button>
+          </div>
+        </div>
+
+        {expanded ? (
+          <div className="mt-4 border-t border-border pt-4" data-testid={`panel-card-details-${listing.id}`}>
+            <div className="grid gap-3 lg:grid-cols-2">
+              <RatingBreakdown
+                label="bb-lizard"
+                average={lizardAverage}
+                location={Number(listing.bbLizardLocationRating) || 0}
+                layout={Number(listing.bbLizardLayoutRating) || 0}
+                overall={Number(listing.bbLizardOverallRating) || Number(listing.bbLizardRating) || 0}
+                comment={listing.bbLizardComment || ""}
+                testId={`breakdown-lizard-${listing.id}`}
+              />
+              <RatingBreakdown
+                label="bb-crab"
+                average={crabAverage}
+                location={Number(listing.bbCrabLocationRating) || 0}
+                layout={Number(listing.bbCrabLayoutRating) || 0}
+                overall={Number(listing.bbCrabOverallRating) || Number(listing.bbCrabRating) || 0}
+                comment={listing.bbCrabComment || ""}
+                testId={`breakdown-crab-${listing.id}`}
+              />
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+              <div className="space-y-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Apartment</p>
+                  <p className="mt-1 text-sm leading-6">
+                    {[listing.rooms ? `${listing.rooms} rooms` : "", listing.beds ? `${listing.beds} beds` : "", listing.bath ? `${listing.bath} bath` : "", listing.sqFt ? `${listing.sqFt} sq ft` : "", listing.yearBuilt ? `Built ${listing.yearBuilt}` : ""]
+                      .filter(Boolean)
+                      .join(" · ") || "No apartment facts listed."}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Description</p>
+                  <DescriptionCell listing={listing} />
+                </div>
+              </div>
+
+              <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contact</p>
+                  <p className="mt-1 text-sm font-medium">{listing.contactName || "—"}</p>
+                  <p className="text-xs text-muted-foreground">{listing.contactEmail || "No email"}</p>
+                  <p className="text-xs text-muted-foreground">{listing.contactPhone || "No phone"}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <a
+                    href={listing.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex h-9 items-center rounded-md border border-input bg-background px-3 text-sm font-medium text-primary hover:bg-accent"
+                    data-testid={`link-listing-${listing.id}`}
+                  >
+                    StreetEasy <ExternalLink className="ml-1 size-3" />
+                  </a>
+                  <Button type="button" variant="outline" size="sm" onClick={() => onStartEditing(listing)} data-testid={`button-edit-${listing.id}`}>
+                    <Pencil className="mr-2 size-4" />
+                    Edit
+                  </Button>
+                  <Button type="button" variant="outline" size="sm" disabled={deletePending} onClick={onDelete} data-testid={`button-delete-${listing.id}`}>
+                    <Trash2 className="mr-2 size-4" />
+                    Delete
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <ListingEditDialog
+          listing={listing}
+          open={isEditing}
+          draft={draft}
+          isSaving={editSaving}
+          onOpenChange={onEditOpenChange}
+          onDraftChange={onDraftChange}
+          onSave={onSaveEdit}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
 function LaundryFilterButton({
   label,
   value,
@@ -914,10 +1242,10 @@ function ListingTable({
     setFilters((current) => ({ ...current, [key]: value }));
   };
 
-  const toggleSort = (key: SortKey) => {
-    setSort((current) =>
-      current.key === key ? { key, direction: current.direction === "asc" ? "desc" : "asc" } : { key, direction: "asc" },
-    );
+  const sortValue = `${sort.key}:${sort.direction}`;
+  const updateSort = (value: string) => {
+    const [key, direction] = value.split(":") as [SortKey, SortDirection];
+    setSort({ key, direction });
   };
 
   const updateMutation = useMutation({
@@ -1081,7 +1409,7 @@ function ListingTable({
         </div>
       </CardHeader>
       <CardContent>
-        <div className="mb-4 grid gap-3 rounded-lg border border-border bg-muted/20 p-3 lg:grid-cols-[1.4fr_repeat(3,0.8fr)_repeat(2,1fr)_auto]">
+        <div className="mb-4 grid gap-3 rounded-lg border border-border bg-muted/20 p-3 lg:grid-cols-[1.4fr_repeat(3,0.8fr)_repeat(2,1fr)_0.9fr_auto]">
           <Input
             value={filters.neighborhood}
             onChange={(event) => updateFilter("neighborhood", event.target.value)}
@@ -1125,6 +1453,18 @@ function ListingTable({
             onChange={(value) => updateFilter("inBuildingLaundry", value)}
             testId="button-filter-in-building"
           />
+          <Select value={sortValue} onValueChange={updateSort}>
+            <SelectTrigger className="text-sm" data-testid="select-sort">
+              <SelectValue placeholder="Sort" />
+            </SelectTrigger>
+            <SelectContent>
+              {sortOptions.map((option) => (
+                <SelectItem key={`${option.key}:${option.direction}`} value={`${option.key}:${option.direction}`}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button type="button" variant="ghost" onClick={() => setFilters(defaultFilters)} data-testid="button-clear-filters">
             Clear filters
           </Button>
@@ -1164,167 +1504,34 @@ function ListingTable({
             </Button>
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-lg border border-border">
-            <Table className="min-w-[3480px] table-fixed">
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[320px] bg-muted/40 px-2 py-2 text-[10px] font-semibold uppercase leading-tight tracking-wide">
-                    Ratings
-                  </TableHead>
-                  {fieldLabels.map(([key, label]) => (
-                    <TableHead key={label} className={`${columnWidths[key] || ""} bg-muted/40 px-2 py-2 text-[10px] font-semibold uppercase leading-tight tracking-wide`}>
-                      {(["neighborhood", "rent", "pplxDist", "sevenTwoDist", "datePosted", "yearBuilt", "hasInUnitLaundry", "hasInBuildingLaundry"] as DisplayFieldKey[]).includes(key) ? (
-                        <button
-                          type="button"
-                          className="flex items-center gap-1 text-left uppercase"
-                          onClick={() => toggleSort(key as SortKey)}
-                          data-testid={`button-sort-${String(key)}`}
-                        >
-                          {label}
-                          <ArrowUpDown className="size-3" />
-                          {sort.key === key ? <span>{sort.direction === "asc" ? "↑" : "↓"}</span> : null}
-                        </button>
-                      ) : (
-                        label
-                      )}
-                    </TableHead>
-                  ))}
-                  <TableHead className="w-[120px] bg-muted/40 px-2 py-2 text-[10px] font-semibold uppercase leading-tight tracking-wide">
-                    <button
-                      type="button"
-                      className="flex items-center gap-1 text-left uppercase"
-                      onClick={() => toggleSort("averageRating")}
-                      data-testid="button-sort-averageRating"
-                    >
-                      Avg rating
-                      <ArrowUpDown className="size-3" />
-                      {sort.key === "averageRating" ? <span>{sort.direction === "asc" ? "↑" : "↓"}</span> : null}
-                    </button>
-                  </TableHead>
-                  <TableHead className="w-[110px] bg-muted/40 px-2 py-2 text-[10px] font-semibold uppercase leading-tight tracking-wide">
-                    Actions
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {visibleListings.map((listing) => {
-                  const isEditing = editingId === listing.id && draft;
-                  const row = isEditing ? draft : listingToEditable(listing);
-                  return (
-                    <TableRow key={listing.id} data-testid={`row-listing-${listing.id}`}>
-                      <TableCell className="bg-card px-2 py-3 align-top">
-                        <RatingCell
-                          listing={listing}
-                          disabled={ratingMutation.isPending}
-                          onChange={(id, values) => ratingMutation.mutateAsync({ id, ...values })}
-                        />
-                      </TableCell>
-                      {fieldLabels.map(([key, label, type]) => (
-                        <TableCell key={key} className="px-2 py-3 align-top">
-                          {isEditing ? (
-                            <EditableCell
-                              value={row[key as keyof EditableListing] as string | number | boolean}
-                              type={type}
-                              testId={`input-${String(key)}-${listing.id}`}
-                              onChange={(value) => setDraftField(key as keyof EditableListing, value)}
-                            />
-                          ) : key === "link" ? (
-                            <a
-                              href={listing.link}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex max-w-full items-center gap-1 truncate text-xs text-primary underline-offset-4 hover:underline"
-                              data-testid={`link-listing-${listing.id}`}
-                              title={listing.link}
-                            >
-                              StreetEasy <ExternalLink className="size-3" />
-                            </a>
-                          ) : type === "boolean" ? (
-                            <Checkbox
-                              checked={Boolean(row[key as keyof EditableListing])}
-                              disabled
-                              aria-label={`${label} ${Boolean(row[key as keyof EditableListing]) ? "yes" : "no"}`}
-                              data-testid={`checkbox-${String(key)}-${listing.id}`}
-                            />
-                          ) : key === "description" ? (
-                            <DescriptionCell listing={listing} />
-                          ) : (
-                            <span
-                              className="block break-words text-xs leading-tight"
-                              data-testid={`text-${String(key)}-${listing.id}`}
-                            >
-                              {String(row[key as keyof EditableListing] || "—")}
-                            </span>
-                          )}
-                        </TableCell>
-                      ))}
-                      <TableCell className="bg-card px-2 py-3 align-top">
-                        <span className="block text-xs font-semibold tabular-nums leading-tight" data-testid={`text-average-rating-column-${listing.id}`}>
-                          {averageRating(listing) || "—"}
-                        </span>
-                      </TableCell>
-                      <TableCell className="bg-card px-2 py-3 align-top">
-                        {isEditing ? (
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              type="button"
-                              size="icon"
-                              className="size-8"
-                              aria-label={`Save listing ${listing.id}`}
-                              disabled={updateMutation.isPending}
-                              onClick={() => draft && updateMutation.mutate(draft)}
-                              data-testid={`button-save-${listing.id}`}
-                            >
-                              <Check className="size-4" />
-                            </Button>
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="outline"
-                              className="size-8"
-                              aria-label={`Cancel editing listing ${listing.id}`}
-                              onClick={() => {
-                                setEditingId(null);
-                                setDraft(null);
-                              }}
-                              data-testid={`button-cancel-${listing.id}`}
-                            >
-                              <X className="size-4" />
-                            </Button>
-                          </div>
-                        ) : (
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="outline"
-                              className="size-8"
-                              aria-label={`Edit listing ${listing.id}`}
-                              onClick={() => startEditing(listing)}
-                              data-testid={`button-edit-${listing.id}`}
-                            >
-                              <Pencil className="size-4" />
-                            </Button>
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="outline"
-                              className="size-8"
-                              aria-label={`Delete listing ${listing.id}`}
-                              disabled={deleteMutation.isPending}
-                              onClick={() => deleteMutation.mutate(listing.id)}
-                              data-testid={`button-delete-${listing.id}`}
-                            >
-                              <Trash2 className="size-4" />
-                            </Button>
-                          </div>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+          <div className="grid gap-3" data-testid="list-card-view">
+            {visibleListings.map((listing) => {
+              const isEditing = editingId === listing.id && Boolean(draft);
+              return (
+                <ListingCard
+                  key={listing.id}
+                  listing={listing}
+                  isEditing={isEditing}
+                  draft={isEditing ? draft : null}
+                  ratingDisabled={ratingMutation.isPending}
+                  editSaving={updateMutation.isPending}
+                  deletePending={deleteMutation.isPending}
+                  onRateChange={(id, values) => ratingMutation.mutateAsync({ id, ...values })}
+                  onStartEditing={startEditing}
+                  onEditOpenChange={(open) => {
+                    if (!open) {
+                      setEditingId(null);
+                      setDraft(null);
+                    } else {
+                      startEditing(listing);
+                    }
+                  }}
+                  onDraftChange={setDraftField}
+                  onSaveEdit={() => draft && updateMutation.mutate(draft)}
+                  onDelete={() => deleteMutation.mutate(listing.id)}
+                />
+              );
+            })}
           </div>
         )}
       </CardContent>
