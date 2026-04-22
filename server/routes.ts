@@ -9,6 +9,7 @@ import {
   updateListingSchema,
 } from "@shared/schema";
 import type { InsertListing } from "@shared/schema";
+import { annotateNeedsReview } from "@shared/needs-review";
 import { storage } from "./storage";
 import { ZodError } from "zod";
 
@@ -892,6 +893,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.get("/api/listings", async (_req, res) => {
     res.json(await storage.listListings());
+  });
+
+  app.get("/api/listings/needs-review", async (_req, res) => {
+    const annotated = (await storage.listListings()).map(annotateNeedsReview);
+    res.json(annotated.filter((listing) => listing.needsReviewReasons.length > 0));
   });
 
   app.post("/api/listings", async (req, res) => {
