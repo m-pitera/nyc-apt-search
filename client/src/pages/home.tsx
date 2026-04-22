@@ -419,8 +419,8 @@ function ListingTable({ listings, isLoading }: { listings: ListingView[]; isLoad
             </p>
           </div>
         ) : (
-          <div className="rounded-lg border border-border">
-            <Table>
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <Table className="min-w-[1800px]">
               <TableHeader>
                 <TableRow>
                   {fieldLabels.map(([, label]) => (
@@ -428,10 +428,10 @@ function ListingTable({ listings, isLoading }: { listings: ListingView[]; isLoad
                       {label}
                     </TableHead>
                   ))}
-                  <TableHead className="sticky right-28 z-10 min-w-40 bg-muted/80 text-xs font-semibold uppercase tracking-wide">
+                  <TableHead className="min-w-40 bg-muted/40 text-xs font-semibold uppercase tracking-wide">
                     Status
                   </TableHead>
-                  <TableHead className="sticky right-0 z-10 min-w-28 bg-muted/80 text-xs font-semibold uppercase tracking-wide">
+                  <TableHead className="min-w-28 bg-muted/40 text-xs font-semibold uppercase tracking-wide">
                     Actions
                   </TableHead>
                 </TableRow>
@@ -476,12 +476,12 @@ function ListingTable({ listings, isLoading }: { listings: ListingView[]; isLoad
                           )}
                         </TableCell>
                       ))}
-                      <TableCell className="sticky right-28 z-10 bg-card align-top">
+                      <TableCell className="bg-card align-top">
                         <Badge variant={statusVariant(listing.parseStatus)} className="max-w-64 whitespace-normal text-left" data-testid={`status-${listing.id}`}>
                           {listing.parseStatus || "Manual"}
                         </Badge>
                       </TableCell>
-                      <TableCell className="sticky right-0 z-10 bg-card align-top">
+                      <TableCell className="bg-card align-top">
                         {isEditing ? (
                           <div className="flex flex-wrap gap-2">
                             <Button
