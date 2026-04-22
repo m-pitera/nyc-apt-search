@@ -6,10 +6,12 @@ import {
   canonicalizeStreetEasyUrl,
   importUrlSchema,
   insertListingSchema,
+  refreshAllRequestSchema,
   updateListingSchema,
 } from "@shared/schema";
-import type { InsertListing } from "@shared/schema";
+import type { InsertListing, ListingView, RefreshAllRequest } from "@shared/schema";
 import { annotateNeedsReview } from "@shared/needs-review";
+import { filterRefreshEligible } from "@shared/refresh";
 import { storage } from "./storage";
 import { ZodError } from "zod";
 
@@ -433,6 +435,11 @@ async function mapApifyItemToListing(url: string, item: ApifyItem): Promise<Inse
     availability: "active",
     workflowStatus: "new",
     createdAt: new Date().toISOString(),
+    lastScrapedAt: new Date().toISOString(),
+    lastRefreshAttemptAt: "",
+    lastRefreshStatus: "never",
+    refreshError: "",
+    lastSeenAvailableAt: "",
   };
 }
 
@@ -714,6 +721,11 @@ function parseListingFromHtml(url: string, html: string, publishedDate?: string)
     availability: "active",
     workflowStatus: "new",
     createdAt: new Date().toISOString(),
+    lastScrapedAt: new Date().toISOString(),
+    lastRefreshAttemptAt: "",
+    lastRefreshStatus: "never",
+    refreshError: "",
+    lastSeenAvailableAt: "",
   };
 }
 
@@ -825,6 +837,63 @@ async function importWithApify(url: string): Promise<InsertListing> {
   }
 
   return mapApifyItemToListing(url, item);
+}
+
+async function scrapeListingFromUrl(url: string, pageText?: string): Promise<{
+  listing: InsertListing;
+  source: "pageText" | "apify" | "direct";
+}> {
+  if (pageText?.trim()) {
+    return { listing: parseListingFromText(url, pageText), source: "pageText" };
+  }
+
+  if (process.env.APIFY_TOKEN) {
+    return { listing: await importWithApify(url), source: "apify" };
+  }
+
+  const { html, publishedDate } = await fetchStreetEasy(url);
+  return { listing: parseListingFromHtml(url, html, publishedDate), source: "direct" };
+}
+
+type RefreshOutcome =
+  | { status: "not_found"; listing?: undefined }
+  | { status: "refreshed" | "failed" | "skipped"; listing: ListingView | undefined };
+
+async function refreshListingById(id: number): Promise<RefreshOutcome> {
+  const existing = await storage.getListing(id);
+  if (!existing) return { status: "not_found" };
+
+  const url = existing.canonicalLink || existing.link;
+  const now = new Date().toISOString();
+
+  if (!url) {
+    const updated = await storage.updateListing(id, {
+      lastRefreshAttemptAt: now,
+      lastRefreshStatus: "failed",
+      refreshError: "Listing has no link to refresh from",
+    });
+    return { status: "failed", listing: updated };
+  }
+
+  try {
+    const { listing: scraped } = await scrapeListingFromUrl(url);
+    const updated = await storage.applyRefreshedFields(id, scraped, {
+      lastScrapedAt: now,
+      lastRefreshAttemptAt: now,
+      lastRefreshStatus: "refreshed",
+      refreshError: "",
+      lastSeenAvailableAt: now,
+    });
+    return { status: "refreshed", listing: updated };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown refresh failure";
+    const updated = await storage.updateListing(id, {
+      lastRefreshAttemptAt: now,
+      lastRefreshStatus: "failed",
+      refreshError: message.slice(0, 500),
+    });
+    return { status: "failed", listing: updated };
+  }
 }
 
 function formatZodError(error: ZodError): string {
@@ -976,6 +1045,85 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(updated);
     } catch (error) {
       res.status(400).json({ message: error instanceof ZodError ? formatZodError(error) : "Invalid listing update" });
+    }
+  });
+
+  app.post("/api/listings/refresh", async (req, res) => {
+    let request: RefreshAllRequest;
+    try {
+      request = refreshAllRequestSchema.parse(req.body ?? {});
+    } catch (error) {
+      res.status(400).json({ message: error instanceof ZodError ? formatZodError(error) : "Invalid request" });
+      return;
+    }
+
+    const all = await storage.listListings();
+    let candidates: ListingView[];
+    if (request.listingIds?.length) {
+      const ids = new Set(request.listingIds);
+      candidates = all.filter((listing) => ids.has(listing.id));
+    } else {
+      candidates = filterRefreshEligible(all, {
+        minAverageRating: request.minAverageRating,
+        availability: request.availability,
+      });
+    }
+
+    if (typeof request.limit === "number") {
+      candidates = candidates.slice(0, request.limit);
+    }
+
+    const results: Array<{
+      id: number;
+      status: "refreshed" | "failed" | "skipped";
+      error?: string;
+    }> = [];
+
+    for (const candidate of candidates) {
+      try {
+        const outcome = await refreshListingById(candidate.id);
+        if (outcome.status === "not_found") {
+          results.push({ id: candidate.id, status: "skipped", error: "Listing not found" });
+        } else {
+          results.push({ id: candidate.id, status: outcome.status });
+        }
+      } catch (error) {
+        results.push({
+          id: candidate.id,
+          status: "failed",
+          error: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    }
+
+    const summary = {
+      attempted: results.length,
+      refreshed: results.filter((r) => r.status === "refreshed").length,
+      failed: results.filter((r) => r.status === "failed").length,
+      skipped: results.filter((r) => r.status === "skipped").length,
+    };
+
+    res.json({ summary, results });
+  });
+
+  app.post("/api/listings/:id/refresh", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      res.status(400).json({ message: "Invalid listing id" });
+      return;
+    }
+
+    try {
+      const outcome = await refreshListingById(id);
+      if (outcome.status === "not_found") {
+        res.status(404).json({ message: "Listing not found" });
+        return;
+      }
+      res.json({ status: outcome.status, listing: outcome.listing });
+    } catch (error) {
+      res.status(502).json({
+        message: error instanceof Error ? error.message : "Refresh failed",
+      });
     }
   });
 
