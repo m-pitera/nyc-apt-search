@@ -1,12 +1,19 @@
 import "dotenv/config";
 import express, { Response, NextFunction } from 'express';
 import type { Request } from 'express';
+import helmet from "helmet";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "node:http";
 
 const app = express();
 const httpServer = createServer(app);
+
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+  }),
+);
 
 declare module "http" {
   interface IncomingMessage {

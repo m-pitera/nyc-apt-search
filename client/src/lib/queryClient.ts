@@ -1,6 +1,46 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+const AUTH_TOKEN_COOKIE = "__Host-nyc_apt_token";
+let appToken = readRememberedToken();
+
+function readRememberedToken(): string {
+  if (typeof document === "undefined") return "";
+  try {
+    return (
+      document.cookie
+        .split(";")
+        .map((part) => part.trim())
+        .find((part) => part.startsWith(`${AUTH_TOKEN_COOKIE}=`))
+        ?.slice(AUTH_TOKEN_COOKIE.length + 1) || ""
+    );
+  } catch {
+    return "";
+  }
+}
+
+function writeRememberedToken(token: string) {
+  if (typeof document === "undefined") return;
+  try {
+    document.cookie = `${AUTH_TOKEN_COOKIE}=${encodeURIComponent(token)}; Max-Age=2592000; Path=/; Secure; SameSite=Strict`;
+  } catch {
+    // Remember-me is a convenience feature. If cookies are unavailable, keep the token in memory only.
+  }
+}
+
+export function setAppToken(token: string, remember: boolean) {
+  appToken = token;
+  if (remember) {
+    writeRememberedToken(token);
+  }
+}
+
+function authHeaders(data?: unknown): HeadersInit {
+  return {
+    ...(data ? { "Content-Type": "application/json" } : {}),
+    ...(appToken ? { "X-App-Token": appToken } : {}),
+  };
+}
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
@@ -16,7 +56,7 @@ export async function apiRequest(
 ): Promise<Response> {
   const res = await fetch(`${API_BASE}${url}`, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
+    headers: authHeaders(data),
     body: data ? JSON.stringify(data) : undefined,
   });
 
@@ -30,7 +70,9 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const res = await fetch(`${API_BASE}${queryKey.join("/")}`);
+    const res = await fetch(`${API_BASE}${queryKey.join("/")}`, {
+      headers: authHeaders(),
+    });
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null;
@@ -45,8 +87,9 @@ export const queryClient = new QueryClient({
     queries: {
       queryFn: getQueryFn({ on401: "throw" }),
       refetchInterval: false,
-      refetchOnWindowFocus: false,
-      staleTime: Infinity,
+      refetchOnMount: "always",
+      refetchOnWindowFocus: true,
+      staleTime: 0,
       retry: false,
     },
     mutations: {

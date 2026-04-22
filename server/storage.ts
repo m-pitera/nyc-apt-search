@@ -14,6 +14,8 @@ sqlite.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     link TEXT NOT NULL,
     neighborhood TEXT NOT NULL DEFAULT '',
+    borough TEXT NOT NULL DEFAULT '',
+    building_title TEXT NOT NULL DEFAULT '',
     rent TEXT NOT NULL DEFAULT '',
     beds TEXT NOT NULL DEFAULT '',
     rooms TEXT NOT NULL DEFAULT '',
@@ -23,13 +25,47 @@ sqlite.exec(`
     pplx_dist TEXT NOT NULL DEFAULT '',
     seven_two_dist TEXT NOT NULL DEFAULT '',
     date_posted TEXT NOT NULL DEFAULT '',
+    year_built TEXT NOT NULL DEFAULT '',
+    open_rentals_count TEXT NOT NULL DEFAULT '',
+    listing_status TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    contact_name TEXT NOT NULL DEFAULT '',
+    contact_email TEXT NOT NULL DEFAULT '',
+    contact_phone TEXT NOT NULL DEFAULT '',
     amenities TEXT NOT NULL DEFAULT '[]',
     has_in_unit_laundry INTEGER NOT NULL DEFAULT 0,
     has_in_building_laundry INTEGER NOT NULL DEFAULT 0,
+    latitude TEXT NOT NULL DEFAULT '',
+    longitude TEXT NOT NULL DEFAULT '',
+    bb_lizard_rating INTEGER NOT NULL DEFAULT 0,
+    bb_crab_rating INTEGER NOT NULL DEFAULT 0,
+    rating INTEGER NOT NULL DEFAULT 0,
     parse_status TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT ''
   );
 `);
+
+const existingColumns = sqlite.prepare("PRAGMA table_info(listings)").all() as Array<{ name: string }>;
+function addMissingColumn(name: string, definition: string) {
+  if (!existingColumns.some((column) => column.name === name)) {
+    sqlite.exec(`ALTER TABLE listings ADD COLUMN ${definition};`);
+  }
+}
+
+addMissingColumn("borough", "borough TEXT NOT NULL DEFAULT ''");
+addMissingColumn("building_title", "building_title TEXT NOT NULL DEFAULT ''");
+addMissingColumn("year_built", "year_built TEXT NOT NULL DEFAULT ''");
+addMissingColumn("open_rentals_count", "open_rentals_count TEXT NOT NULL DEFAULT ''");
+addMissingColumn("listing_status", "listing_status TEXT NOT NULL DEFAULT ''");
+addMissingColumn("description", "description TEXT NOT NULL DEFAULT ''");
+addMissingColumn("contact_name", "contact_name TEXT NOT NULL DEFAULT ''");
+addMissingColumn("contact_email", "contact_email TEXT NOT NULL DEFAULT ''");
+addMissingColumn("contact_phone", "contact_phone TEXT NOT NULL DEFAULT ''");
+addMissingColumn("latitude", "latitude TEXT NOT NULL DEFAULT ''");
+addMissingColumn("longitude", "longitude TEXT NOT NULL DEFAULT ''");
+addMissingColumn("bb_lizard_rating", "bb_lizard_rating INTEGER NOT NULL DEFAULT 0");
+addMissingColumn("bb_crab_rating", "bb_crab_rating INTEGER NOT NULL DEFAULT 0");
+addMissingColumn("rating", "rating INTEGER NOT NULL DEFAULT 0");
 
 function normalizeAmenities(value: unknown): string {
   if (Array.isArray(value)) {
@@ -91,7 +127,6 @@ export interface IStorage {
   createListing(listing: InsertListing): Promise<ListingView>;
   updateListing(id: number, listing: UpdateListing): Promise<ListingView | undefined>;
   deleteListing(id: number): Promise<boolean>;
-  clearListings(): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -116,10 +151,6 @@ export class DatabaseStorage implements IStorage {
   async deleteListing(id: number): Promise<boolean> {
     const result = db.delete(listings).where(eq(listings.id, id)).run();
     return result.changes > 0;
-  }
-
-  async clearListings(): Promise<void> {
-    db.delete(listings).run();
   }
 }
 

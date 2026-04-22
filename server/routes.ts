@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
+import crypto from "node:crypto";
 import { importUrlSchema, insertListingSchema, updateListingSchema } from "@shared/schema";
 import type { InsertListing } from "@shared/schema";
 import { storage } from "./storage";
@@ -16,6 +17,8 @@ type PriceHistory = {
 };
 
 const DEFAULT_APIFY_ACTOR = "memo23/streeteasy-ppr";
+const PPLX_OFFICE_ADDRESS = "853 Broadway, New York, NY 10003";
+const SEVEN_TWO_ADDRESS = "55 Hudson Yards, New York, NY 10001";
 
 const REQUEST_HEADERS = {
   "User-Agent":
@@ -90,6 +93,22 @@ function parseJsonArray<T>(value: unknown): T[] {
   }
 }
 
+function firstRecordFromJson(value: unknown): ApifyItem {
+  if (Array.isArray(value)) {
+    return (value.find((item) => item && typeof item === "object") as ApifyItem | undefined) || {};
+  }
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return (parsed.find((item) => item && typeof item === "object") as ApifyItem | undefined) || {};
+    }
+    return parsed && typeof parsed === "object" ? (parsed as ApifyItem) : {};
+  } catch {
+    return {};
+  }
+}
+
 function formatMoney(value: unknown): string {
   if (typeof value === "number" && Number.isFinite(value)) {
     return `$${Math.round(value).toLocaleString("en-US")}`;
@@ -150,7 +169,113 @@ function normalizedStreetEasyUrl(value: string, fallback: string): string {
   return fallback;
 }
 
-function mapApifyItemToListing(url: string, item: ApifyItem): InsertListing {
+function extractContactFromApify(item: ApifyItem): { contactName: string; contactEmail: string; contactPhone: string } {
+  const contact = firstRecordFromJson(
+    item.combineData_rental_contacts_json ||
+      item.contacts ||
+      item.contact ||
+      item.combineData_rental_contact_json,
+  );
+  const contactName =
+    readString(contact, ["name", "contactName", "agentName", "display_name", "fullName"]) ||
+    readString(item, ["contactName", "agentName", "combineData_rental_contact_name"]);
+  const contactEmail =
+    readString(contact, ["email", "contactEmail", "agentEmail"]) ||
+    readString(item, ["contactEmail", "agentEmail", "combineData_rental_contact_email"]);
+  const contactPhone =
+    readString(contact, ["phone", "phoneNumber", "primary_phone", "primaryPhone", "mobile_phone", "cell"]) ||
+    readString(item, ["contactPhone", "agentPhone", "phone", "combineData_rental_contact_phone"]);
+
+  return { contactName, contactEmail, contactPhone };
+}
+
+function originFromApify(item: ApifyItem): { origin: string; latitude: string; longitude: string } {
+  const latitude = readNumberLike(item, [
+    "combineData_rental_address_latitude",
+    "combineData_building_address_latitude",
+    "address_latitude",
+    "latitude",
+    "lat",
+  ]);
+  const longitude = readNumberLike(item, [
+    "combineData_rental_address_longitude",
+    "combineData_building_address_longitude",
+    "address_longitude",
+    "longitude",
+    "lng",
+    "lon",
+  ]);
+
+  if (latitude && longitude) return { origin: `${latitude},${longitude}`, latitude, longitude };
+
+  const address = [
+    readString(item, ["combineData_rental_building_title", "buildingTitle", "building_title"]),
+    readString(item, ["combineData_rental_address_address", "address", "streetAddress", "street_address"]),
+    readString(item, ["combineData_rental_address_city", "city"]),
+    readString(item, ["combineData_rental_address_state", "state"]),
+    readString(item, ["combineData_rental_address_zipcode", "zipcode", "zip", "postalCode"]),
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  return { origin: address, latitude, longitude };
+}
+
+function waypointFor(value: string): Record<string, unknown> {
+  const coordinateMatch = value.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (coordinateMatch) {
+    return {
+      location: {
+        latLng: {
+          latitude: Number(coordinateMatch[1]),
+          longitude: Number(coordinateMatch[2]),
+        },
+      },
+    };
+  }
+
+  return { address: value };
+}
+
+function formatRouteDuration(value: string | undefined): string {
+  const seconds = Number(value?.replace(/s$/, ""));
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  const totalMinutes = Math.max(1, Math.round(seconds / 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (!hours) return `${totalMinutes} min`;
+  return minutes ? `${hours} hr ${minutes} min` : `${hours} hr`;
+}
+
+async function getTransitCommute(origin: string, destination: string): Promise<string> {
+  const key = process.env.GOOGLE_MAPS_API_KEY;
+  if (!key || !origin) return "";
+
+  try {
+    const response = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": key,
+        "X-Goog-FieldMask": "routes.duration,routes.legs.duration",
+      },
+      body: JSON.stringify({
+        origin: waypointFor(origin),
+        destination: waypointFor(destination),
+        travelMode: "TRANSIT",
+        departureTime: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    });
+    if (!response.ok) return "";
+    const payload = (await response.json()) as { routes?: Array<{ duration?: string; legs?: Array<{ duration?: string }> }> };
+    const route = payload.routes?.[0];
+    return formatRouteDuration(route?.duration || route?.legs?.[0]?.duration);
+  } catch {
+    return "";
+  }
+}
+
+async function mapApifyItemToListing(url: string, item: ApifyItem): Promise<InsertListing> {
   const priceHistory = rentFromPriceHistory(item.combineData_rental_price_histories_json);
   const description = readString(item, [
     "combineData_rental_description",
@@ -208,12 +333,52 @@ function mapApifyItemToListing(url: string, item: ApifyItem): InsertListing {
     (listedAt && !Number.isNaN(new Date(listedAt).valueOf()) ? new Date(listedAt).toISOString().slice(0, 10) : listedAt);
   const daysOnMarket = readNumberLike(item, ["combineData_rental_days_on_market", "daysOnMarket", "days_on_market"]);
   const dateWithDays = datePosted && daysOnMarket ? `${datePosted} (${daysOnMarket} days on market)` : datePosted;
+  const borough = readString(item, [
+    "combineData_rental_area_borough_name",
+    "combineData_area_borough_name",
+    "boroughName",
+    "borough",
+  ]);
+  const buildingTitle = readString(item, [
+    "combineData_rental_building_title",
+    "combineData_building_title",
+    "buildingTitle",
+    "building_title",
+    "title",
+  ]);
+  const yearBuilt = readNumberLike(item, [
+    "combineData_rental_building_year_built",
+    "combineData_building_year_built",
+    "buildingYearBuilt",
+    "yearBuilt",
+    "year_built",
+  ]);
+  const openRentalsCount = readNumberLike(item, [
+    "combineData_rental_building_open_rentals_count",
+    "combineData_building_open_rentals_count",
+    "openRentalsCount",
+    "open_rentals_count",
+  ]);
+  const listingStatus = readString(item, [
+    "combineData_rental_status_title",
+    "combineData_rental_status",
+    "statusTitle",
+    "listingStatus",
+    "status",
+  ]);
+  const contact = extractContactFromApify(item);
+  const { origin, latitude, longitude } = originFromApify(item);
+  const [pplxDist, sevenTwoDist] = await Promise.all([
+    getTransitCommute(origin, PPLX_OFFICE_ADDRESS),
+    getTransitCommute(origin, SEVEN_TWO_ADDRESS),
+  ]);
   const missing = [
     ["rent", rent],
     ["beds", beds],
     ["bath", bath],
     ["sq ft", sqFt],
   ].filter(([, value]) => !value);
+  const commuteStatus = process.env.GOOGLE_MAPS_API_KEY ? "" : " Transit times require GOOGLE_MAPS_API_KEY.";
 
   return {
     link,
@@ -224,21 +389,35 @@ function mapApifyItemToListing(url: string, item: ApifyItem): InsertListing {
       "neighborhood",
       "address_addressLocality",
     ]),
+    borough,
+    buildingTitle,
     rent,
     beds,
     rooms,
     roomsDesc: deriveRoomsDesc(beds, rooms, bath, sqFt, description).slice(0, 700),
     bath,
     sqFt,
-    pplxDist: "",
-    sevenTwoDist: "",
+    pplxDist,
+    sevenTwoDist,
     datePosted: dateWithDays,
+    yearBuilt,
+    openRentalsCount,
+    listingStatus,
+    description: description.slice(0, 4000),
+    contactName: contact.contactName,
+    contactEmail: contact.contactEmail,
+    contactPhone: contact.contactPhone,
     amenities: JSON.stringify(amenities),
     hasInUnitLaundry: laundry.hasInUnitLaundry,
     hasInBuildingLaundry: laundry.hasInBuildingLaundry,
+    latitude,
+    longitude,
+    bbLizardRating: 0,
+    bbCrabRating: 0,
+    rating: 0,
     parseStatus: missing.length
-      ? `Imported via Apify (${missing.map(([field]) => field).join(", ")} unresolved).`
-      : "Imported via Apify",
+      ? `Imported via Apify (${missing.map(([field]) => field).join(", ")} unresolved).${commuteStatus}`
+      : `Imported via Apify.${commuteStatus}`.trim(),
     createdAt: new Date().toISOString(),
   };
 }
@@ -483,6 +662,8 @@ function parseListingFromHtml(url: string, html: string, publishedDate?: string)
   return {
     link: url,
     neighborhood: parseNeighborhood(html, text, parsedUrl, jsonRoots),
+    borough: firstStringFromJson(jsonRoots, ["borough", "boroughname"]) || "",
+    buildingTitle: cleanText(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "").split("|")[0]?.trim() || "",
     rent: parseRent(text, jsonRoots),
     beds,
     rooms,
@@ -492,9 +673,21 @@ function parseListingFromHtml(url: string, html: string, publishedDate?: string)
     pplxDist: "",
     sevenTwoDist: "",
     datePosted: parseDatePosted(text, publishedDate),
+    yearBuilt: firstStringFromJson(jsonRoots, ["yearbuilt", "buildingyearbuilt"]) || "",
+    openRentalsCount: "",
+    listingStatus: "",
+    description: parseRoomsDesc(text),
+    contactName: firstStringFromJson(jsonRoots, ["contactname", "agentname", "name"]) || "",
+    contactEmail: firstStringFromJson(jsonRoots, ["email", "contactemail", "agentemail"]) || "",
+    contactPhone: firstStringFromJson(jsonRoots, ["telephone", "phone", "contactphone", "agentphone"]) || "",
     amenities: JSON.stringify(amenities),
     hasInUnitLaundry: laundry.hasInUnitLaundry,
     hasInBuildingLaundry: laundry.hasInBuildingLaundry,
+    latitude: "",
+    longitude: "",
+    bbLizardRating: 0,
+    bbCrabRating: 0,
+    rating: 0,
     parseStatus: missing.length
       ? `Imported with ${missing.map(([field]) => field).join(", ")} unresolved. Edit the row if StreetEasy hid those fields.`
       : "Imported",
@@ -616,7 +809,66 @@ function formatZodError(error: ZodError): string {
   return error.issues.map((issue) => issue.message).join("; ");
 }
 
+function sha256(value: string): string {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function timingSafeEqual(a: string, b: string): boolean {
+  const aBuffer = Buffer.from(a);
+  const bBuffer = Buffer.from(b);
+  return aBuffer.length === bBuffer.length && crypto.timingSafeEqual(aBuffer, bBuffer);
+}
+
+function isAuthenticated(password: unknown): boolean {
+  if (!process.env.APP_PASSWORD_SHA256 || typeof password !== "string") return false;
+  return timingSafeEqual(sha256(password), process.env.APP_PASSWORD_SHA256);
+}
+
+function authToken(): string {
+  const secret = process.env.APP_SESSION_SECRET;
+  if (!secret) return "";
+  return crypto.createHmac("sha256", secret).update("nyc-apt-search").digest("hex");
+}
+
+function isValidToken(token: unknown): boolean {
+  const expected = authToken();
+  return typeof token === "string" && Boolean(expected) && timingSafeEqual(token, expected);
+}
+
+function hasAccess(req: { headers: Record<string, string | string[] | undefined> }): boolean {
+  return isAuthenticated(req.headers["x-app-password"]) || isValidToken(req.headers["x-app-token"]);
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  app.get("/api/auth/status", async (req, res) => {
+    res.json({ authenticated: hasAccess(req) });
+  });
+
+  app.post("/api/auth/login", async (req, res) => {
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    const expectedHash = process.env.APP_PASSWORD_SHA256;
+
+    if (!expectedHash || !process.env.APP_SESSION_SECRET) {
+      res.status(503).json({ message: "App password is not configured" });
+      return;
+    }
+
+    if (!timingSafeEqual(sha256(password), expectedHash)) {
+      res.status(401).json({ message: "Incorrect password" });
+      return;
+    }
+
+    res.json({ token: authToken() });
+  });
+
+  app.use("/api/listings", (req, res, next) => {
+    if (hasAccess(req)) {
+      next();
+      return;
+    }
+    res.status(401).json({ message: "Password required" });
+  });
+
   app.get("/api/listings", async (_req, res) => {
     res.json(await storage.listListings());
   });
@@ -697,11 +949,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     const deleted = await storage.deleteListing(id);
     res.status(deleted ? 204 : 404).end();
-  });
-
-  app.delete("/api/listings", async (_req, res) => {
-    await storage.clearListings();
-    res.status(204).end();
   });
 
   return httpServer;
