@@ -48,7 +48,35 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { ListingView } from "@shared/schema";
+import type { Availability, ListingView, WorkflowStatus } from "@shared/schema";
+import { AVAILABILITY_VALUES, WORKFLOW_STATUS_VALUES } from "@shared/schema";
+
+const availabilityLabels: Record<Availability, string> = {
+  active: "Active",
+  inactive: "Inactive",
+  stale: "Stale",
+};
+
+const workflowStatusLabels: Record<WorkflowStatus, string> = {
+  new: "New",
+  contacted: "Contacted",
+  scheduled: "Scheduled",
+  applied: "Applied",
+  signed: "Signed",
+  rejected: "Rejected",
+};
+
+function normalizeAvailability(value: string | null | undefined): Availability {
+  return (AVAILABILITY_VALUES as readonly string[]).includes(value || "")
+    ? (value as Availability)
+    : "active";
+}
+
+function normalizeWorkflowStatus(value: string | null | undefined): WorkflowStatus {
+  return (WORKFLOW_STATUS_VALUES as readonly string[]).includes(value || "")
+    ? (value as WorkflowStatus)
+    : "new";
+}
 
 const formSchema = z.object({
   url: z.string().url("Paste a full StreetEasy URL").refine((value) => {
@@ -972,12 +1000,15 @@ function ListingCard({
   ratingDisabled,
   editSaving,
   deletePending,
+  statusDisabled,
   onRateChange,
   onStartEditing,
   onEditOpenChange,
   onDraftChange,
   onSaveEdit,
   onDelete,
+  onAvailabilityChange,
+  onWorkflowStatusChange,
 }: {
   listing: ListingView;
   isEditing: boolean;
@@ -985,17 +1016,24 @@ function ListingCard({
   ratingDisabled: boolean;
   editSaving: boolean;
   deletePending: boolean;
+  statusDisabled: boolean;
   onRateChange: (id: number, values: RatingPatch) => Promise<unknown> | unknown;
   onStartEditing: (listing: ListingView) => void;
   onEditOpenChange: (open: boolean) => void;
   onDraftChange: (key: keyof EditableListing, value: string | number | boolean) => void;
   onSaveEdit: () => void;
   onDelete: () => void;
+  onAvailabilityChange: (id: number, value: Availability) => void;
+  onWorkflowStatusChange: (id: number, value: WorkflowStatus) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const average = averageRating(listing);
   const lizardAverage = personAverageRating(listing, "lizard");
   const crabAverage = personAverageRating(listing, "crab");
+  const availability = normalizeAvailability(listing.availability);
+  const workflowStatus = normalizeWorkflowStatus(listing.workflowStatus);
+  const availabilityVariant: "default" | "secondary" | "outline" =
+    availability === "active" ? "default" : availability === "stale" ? "secondary" : "outline";
   const laundrySummary =
     listing.hasInUnitLaundry && listing.hasInBuildingLaundry
       ? "Unit + building"
@@ -1025,9 +1063,25 @@ function ListingCard({
                   {[listing.neighborhood, listing.borough].filter(Boolean).join(" · ") || "Neighborhood unknown"}
                 </p>
               </div>
-              <Badge variant={average ? "default" : "outline"} className="text-sm tabular-nums" data-testid={`text-card-average-${listing.id}`}>
-                Avg {average || "—"}
-              </Badge>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge
+                  variant={availabilityVariant}
+                  className="text-[11px] uppercase tracking-wide"
+                  data-testid={`badge-availability-${listing.id}`}
+                >
+                  {availabilityLabels[availability]}
+                </Badge>
+                <Badge
+                  variant="secondary"
+                  className="text-[11px] uppercase tracking-wide"
+                  data-testid={`badge-workflow-${listing.id}`}
+                >
+                  {workflowStatusLabels[workflowStatus]}
+                </Badge>
+                <Badge variant={average ? "default" : "outline"} className="text-sm tabular-nums" data-testid={`text-card-average-${listing.id}`}>
+                  Avg {average || "—"}
+                </Badge>
+              </div>
             </div>
 
             <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -1060,6 +1114,38 @@ function ListingCard({
 
           <div className="flex flex-col gap-2">
             <RatingCell listing={listing} disabled={ratingDisabled} onChange={onRateChange} />
+            <Select
+              value={availability}
+              onValueChange={(value) => onAvailabilityChange(listing.id, value as Availability)}
+              disabled={statusDisabled}
+            >
+              <SelectTrigger className="h-8 text-xs" data-testid={`select-availability-${listing.id}`}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {AVAILABILITY_VALUES.map((value) => (
+                  <SelectItem key={value} value={value} className="text-xs">
+                    {availabilityLabels[value]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={workflowStatus}
+              onValueChange={(value) => onWorkflowStatusChange(listing.id, value as WorkflowStatus)}
+              disabled={statusDisabled}
+            >
+              <SelectTrigger className="h-8 text-xs" data-testid={`select-workflow-${listing.id}`}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {WORKFLOW_STATUS_VALUES.map((value) => (
+                  <SelectItem key={value} value={value} className="text-xs">
+                    {workflowStatusLabels[value]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button type="button" variant="outline" size="sm" onClick={() => setExpanded((value) => !value)} data-testid={`button-toggle-card-${listing.id}`}>
               {expanded ? "Less" : "More"}
             </Button>
@@ -1372,6 +1458,49 @@ function ListingTable({
     },
   });
 
+  const statusMutation = useMutation({
+    mutationFn: async ({
+      id,
+      availability,
+      workflowStatus,
+    }: {
+      id: number;
+      availability?: Availability;
+      workflowStatus?: WorkflowStatus;
+    }) => {
+      const payload: Record<string, string> = {};
+      if (availability !== undefined) payload.availability = availability;
+      if (workflowStatus !== undefined) payload.workflowStatus = workflowStatus;
+      const response = await apiRequest("PATCH", `/api/listings/${id}`, payload);
+      return (await response.json()) as ListingView;
+    },
+    onMutate: async ({ id, availability, workflowStatus }) => {
+      await queryClient.cancelQueries({ queryKey: ["/api/listings"] });
+      const previous = queryClient.getQueryData<ListingView[]>(["/api/listings"]);
+      queryClient.setQueryData<ListingView[]>(["/api/listings"], (current = []) =>
+        current.map((listing) =>
+          listing.id === id
+            ? {
+                ...listing,
+                ...(availability !== undefined ? { availability } : {}),
+                ...(workflowStatus !== undefined ? { workflowStatus } : {}),
+              }
+            : listing,
+        ),
+      );
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["/api/listings"], context.previous);
+      }
+      toast({ title: "Status not saved", description: "Try again.", variant: "destructive" });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/listings"] });
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
       await apiRequest("DELETE", `/api/listings/${id}`);
@@ -1523,6 +1652,7 @@ function ListingTable({
                   ratingDisabled={ratingMutation.isPending}
                   editSaving={updateMutation.isPending}
                   deletePending={deleteMutation.isPending}
+                  statusDisabled={statusMutation.isPending}
                   onRateChange={(id, values) => ratingMutation.mutateAsync({ id, ...values })}
                   onStartEditing={startEditing}
                   onEditOpenChange={(open) => {
@@ -1536,6 +1666,8 @@ function ListingTable({
                   onDraftChange={setDraftField}
                   onSaveEdit={() => draft && updateMutation.mutate(draft)}
                   onDelete={() => deleteMutation.mutate(listing.id)}
+                  onAvailabilityChange={(id, availability) => statusMutation.mutate({ id, availability })}
+                  onWorkflowStatusChange={(id, workflowStatus) => statusMutation.mutate({ id, workflowStatus })}
                 />
               );
             })}

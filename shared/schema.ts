@@ -42,8 +42,23 @@ export const listings = sqliteTable("listings", {
   bbCrabComment: text("bb_crab_comment").notNull().default(""),
   rating: integer("rating").notNull().default(0),
   parseStatus: text("parse_status").notNull().default(""),
+  availability: text("availability").notNull().default("active"),
+  workflowStatus: text("workflow_status").notNull().default("new"),
   createdAt: text("created_at").notNull().default(""),
 });
+
+export const AVAILABILITY_VALUES = ["active", "inactive", "stale"] as const;
+export type Availability = (typeof AVAILABILITY_VALUES)[number];
+
+export const WORKFLOW_STATUS_VALUES = [
+  "new",
+  "contacted",
+  "scheduled",
+  "applied",
+  "signed",
+  "rejected",
+] as const;
+export type WorkflowStatus = (typeof WORKFLOW_STATUS_VALUES)[number];
 
 const baseInsertListingSchema = createInsertSchema(listings).omit({
   id: true,
@@ -51,10 +66,14 @@ const baseInsertListingSchema = createInsertSchema(listings).omit({
 
 export const insertListingSchema = baseInsertListingSchema.extend({
   amenities: z.union([z.string(), z.array(z.string())]).default("[]"),
+  availability: z.enum(AVAILABILITY_VALUES).default("active"),
+  workflowStatus: z.enum(WORKFLOW_STATUS_VALUES).default("new"),
 });
 
 export const updateListingSchema = insertListingSchema.partial().extend({
   amenities: z.union([z.string(), z.array(z.string())]).optional(),
+  availability: z.enum(AVAILABILITY_VALUES).optional(),
+  workflowStatus: z.enum(WORKFLOW_STATUS_VALUES).optional(),
 });
 
 const STREETEASY_HOSTS = new Set(["streeteasy.com", "www.streeteasy.com"]);

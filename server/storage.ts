@@ -50,6 +50,8 @@ sqlite.exec(`
     bb_crab_comment TEXT NOT NULL DEFAULT '',
     rating INTEGER NOT NULL DEFAULT 0,
     parse_status TEXT NOT NULL DEFAULT '',
+    availability TEXT NOT NULL DEFAULT 'active',
+    workflow_status TEXT NOT NULL DEFAULT 'new',
     created_at TEXT NOT NULL DEFAULT ''
   );
 `);
@@ -84,6 +86,18 @@ addMissingColumn("bb_lizard_comment", "bb_lizard_comment TEXT NOT NULL DEFAULT '
 addMissingColumn("bb_crab_comment", "bb_crab_comment TEXT NOT NULL DEFAULT ''");
 addMissingColumn("rating", "rating INTEGER NOT NULL DEFAULT 0");
 addMissingColumn("canonical_link", "canonical_link TEXT NOT NULL DEFAULT ''");
+addMissingColumn("availability", "availability TEXT NOT NULL DEFAULT 'active'");
+addMissingColumn("workflow_status", "workflow_status TEXT NOT NULL DEFAULT 'new'");
+
+function backfillStatusDefaults() {
+  sqlite
+    .prepare("UPDATE listings SET availability = 'active' WHERE availability IS NULL OR availability = ''")
+    .run();
+  sqlite
+    .prepare("UPDATE listings SET workflow_status = 'new' WHERE workflow_status IS NULL OR workflow_status = ''")
+    .run();
+}
+backfillStatusDefaults();
 
 function backfillCanonicalLinks() {
   const rows = sqlite
