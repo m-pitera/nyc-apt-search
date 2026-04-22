@@ -80,6 +80,23 @@ const fieldLabels: Array<[keyof EditableListing, string, "text" | "textarea" | "
   ["hasInBuildingLaundry", "Has in-building laundry", "boolean"],
 ];
 
+const columnWidths: Partial<Record<keyof EditableListing, string>> = {
+  link: "w-[7%]",
+  neighborhood: "w-[8%]",
+  rent: "w-[6%]",
+  beds: "w-[4%]",
+  rooms: "w-[4%]",
+  roomsDesc: "w-[12%]",
+  bath: "w-[4%]",
+  sqFt: "w-[5%]",
+  pplxDist: "w-[5%]",
+  sevenTwoDist: "w-[5%]",
+  datePosted: "w-[8%]",
+  amenities: "w-[9%]",
+  hasInUnitLaundry: "w-[5%]",
+  hasInBuildingLaundry: "w-[5%]",
+};
+
 function listingToEditable(listing: ListingView): EditableListing {
   return {
     ...listing,
@@ -299,7 +316,7 @@ function EditableCell({
         value={String(value ?? "")}
         onChange={(event) => onChange(event.target.value)}
         rows={3}
-        className="min-w-64 resize-y text-sm"
+        className="min-w-48 resize-y text-sm"
         data-testid={testId}
       />
     );
@@ -309,7 +326,7 @@ function EditableCell({
     <Input
       value={String(value ?? "")}
       onChange={(event) => onChange(event.target.value)}
-      className="min-w-32 text-sm"
+      className="min-w-24 text-sm"
       data-testid={testId}
     />
   );
@@ -419,19 +436,19 @@ function ListingTable({ listings, isLoading }: { listings: ListingView[]; isLoad
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-lg border border-border">
-            <Table className="min-w-[1800px]">
+          <div className="rounded-lg border border-border">
+            <Table className="w-full table-fixed">
               <TableHeader>
                 <TableRow>
-                  {fieldLabels.map(([, label]) => (
-                    <TableHead key={label} className="whitespace-nowrap bg-muted/40 text-xs font-semibold uppercase tracking-wide">
+                  {fieldLabels.map(([key, label]) => (
+                    <TableHead key={label} className={`${columnWidths[key] || ""} bg-muted/40 px-2 py-2 text-[10px] font-semibold uppercase leading-tight tracking-wide`}>
                       {label}
                     </TableHead>
                   ))}
-                  <TableHead className="min-w-40 bg-muted/40 text-xs font-semibold uppercase tracking-wide">
+                  <TableHead className="w-[8%] bg-muted/40 px-2 py-2 text-[10px] font-semibold uppercase leading-tight tracking-wide">
                     Status
                   </TableHead>
-                  <TableHead className="min-w-28 bg-muted/40 text-xs font-semibold uppercase tracking-wide">
+                  <TableHead className="w-[5%] bg-muted/40 px-2 py-2 text-[10px] font-semibold uppercase leading-tight tracking-wide">
                     Actions
                   </TableHead>
                 </TableRow>
@@ -443,7 +460,7 @@ function ListingTable({ listings, isLoading }: { listings: ListingView[]; isLoad
                   return (
                     <TableRow key={listing.id} data-testid={`row-listing-${listing.id}`}>
                       {fieldLabels.map(([key, label, type]) => (
-                        <TableCell key={key} className="align-top">
+                        <TableCell key={key} className="px-2 py-3 align-top">
                           {isEditing ? (
                             <EditableCell
                               value={row[key] as string | boolean}
@@ -456,19 +473,19 @@ function ListingTable({ listings, isLoading }: { listings: ListingView[]; isLoad
                               href={listing.link}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex max-w-48 items-center gap-1 truncate text-primary underline-offset-4 hover:underline"
+                              className="inline-flex max-w-full items-center gap-1 truncate text-xs text-primary underline-offset-4 hover:underline"
                               data-testid={`link-listing-${listing.id}`}
                               title={listing.link}
                             >
                               StreetEasy <ExternalLink className="size-3" />
                             </a>
                           ) : type === "boolean" ? (
-                            <Badge variant={row[key] ? "default" : "outline"} data-testid={`text-${String(key)}-${listing.id}`}>
+                            <Badge variant={row[key] ? "default" : "outline"} className="px-1.5 text-[10px]" data-testid={`text-${String(key)}-${listing.id}`}>
                               {row[key] ? "Yes" : "No"}
                             </Badge>
                           ) : (
                             <span
-                              className="block min-w-24 max-w-72 whitespace-pre-wrap text-sm"
+                              className="block break-words text-xs leading-tight"
                               data-testid={`text-${String(key)}-${listing.id}`}
                             >
                               {String(row[key] || "—")}
@@ -476,17 +493,18 @@ function ListingTable({ listings, isLoading }: { listings: ListingView[]; isLoad
                           )}
                         </TableCell>
                       ))}
-                      <TableCell className="bg-card align-top">
-                        <Badge variant={statusVariant(listing.parseStatus)} className="max-w-64 whitespace-normal text-left" data-testid={`status-${listing.id}`}>
+                      <TableCell className="bg-card px-2 py-3 align-top">
+                        <Badge variant={statusVariant(listing.parseStatus)} className="whitespace-normal px-1.5 text-left text-[10px] leading-tight" data-testid={`status-${listing.id}`}>
                           {listing.parseStatus || "Manual"}
                         </Badge>
                       </TableCell>
-                      <TableCell className="bg-card align-top">
+                      <TableCell className="bg-card px-2 py-3 align-top">
                         {isEditing ? (
                           <div className="flex flex-wrap gap-2">
                             <Button
                               type="button"
                               size="icon"
+                              className="size-8"
                               aria-label={`Save listing ${listing.id}`}
                               disabled={updateMutation.isPending}
                               onClick={() => draft && updateMutation.mutate(draft)}
@@ -498,6 +516,7 @@ function ListingTable({ listings, isLoading }: { listings: ListingView[]; isLoad
                               type="button"
                               size="icon"
                               variant="outline"
+                              className="size-8"
                               aria-label={`Cancel editing listing ${listing.id}`}
                               onClick={() => {
                                 setEditingId(null);
@@ -514,6 +533,7 @@ function ListingTable({ listings, isLoading }: { listings: ListingView[]; isLoad
                               type="button"
                               size="icon"
                               variant="outline"
+                              className="size-8"
                               aria-label={`Edit listing ${listing.id}`}
                               onClick={() => startEditing(listing)}
                               data-testid={`button-edit-${listing.id}`}
@@ -524,6 +544,7 @@ function ListingTable({ listings, isLoading }: { listings: ListingView[]; isLoad
                               type="button"
                               size="icon"
                               variant="outline"
+                              className="size-8"
                               aria-label={`Delete listing ${listing.id}`}
                               disabled={deleteMutation.isPending}
                               onClick={() => deleteMutation.mutate(listing.id)}
