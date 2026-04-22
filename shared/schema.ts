@@ -52,6 +52,41 @@ export const listings = sqliteTable("listings", {
   lastSeenAvailableAt: text("last_seen_available_at").notNull().default(""),
 });
 
+export const listingEvents = sqliteTable("listing_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  listingId: integer("listing_id").notNull(),
+  type: text("type").notNull(),
+  createdAt: text("created_at").notNull().default(""),
+  payloadJson: text("payload_json").notNull().default("{}"),
+});
+
+export const LISTING_EVENT_TYPES = [
+  "listing.created",
+  "listing.imported",
+  "listing.import_duplicate",
+  "listing.updated",
+  "listing.refreshed",
+  "listing.refresh_failed",
+  "listing.refresh_stale",
+  "listing.status_changed",
+  "listing.rating_changed",
+  "listing.deleted",
+] as const;
+export type ListingEventType = (typeof LISTING_EVENT_TYPES)[number];
+
+export type ListingEvent = typeof listingEvents.$inferSelect;
+
+export type ListingEventView = Omit<ListingEvent, "payloadJson"> & {
+  payload: Record<string, unknown>;
+};
+
+export const listingEventsQuerySchema = z.object({
+  after: z.coerce.number().int().nonnegative().optional(),
+  limit: z.coerce.number().int().positive().max(1000).optional(),
+});
+
+export type ListingEventsQuery = z.infer<typeof listingEventsQuerySchema>;
+
 export const AVAILABILITY_VALUES = ["active", "inactive", "stale"] as const;
 export type Availability = (typeof AVAILABILITY_VALUES)[number];
 

@@ -6,10 +6,17 @@ import {
   canonicalizeStreetEasyUrl,
   importUrlSchema,
   insertListingSchema,
+  listingEventsQuerySchema,
   refreshAllRequestSchema,
   updateListingSchema,
 } from "@shared/schema";
-import type { InsertListing, ListingView, RefreshAllRequest } from "@shared/schema";
+import type {
+  InsertListing,
+  ListingEventType,
+  ListingView,
+  RefreshAllRequest,
+  UpdateListing,
+} from "@shared/schema";
 import { annotateNeedsReview } from "@shared/needs-review";
 import {
   filterRefreshEligible,
@@ -22,6 +29,51 @@ import {
 } from "@shared/refresh";
 import { storage } from "./storage";
 import { ZodError } from "zod";
+
+const STATUS_UPDATE_FIELDS: Array<keyof UpdateListing> = ["availability", "workflowStatus", "parseStatus"];
+const RATING_UPDATE_FIELDS: Array<keyof UpdateListing> = [
+  "rating",
+  "bbLizardRating",
+  "bbLizardLocationRating",
+  "bbLizardLayoutRating",
+  "bbLizardOverallRating",
+  "bbLizardComment",
+  "bbCrabRating",
+  "bbCrabLocationRating",
+  "bbCrabLayoutRating",
+  "bbCrabOverallRating",
+  "bbCrabComment",
+];
+
+async function recordEventSafe(
+  listingId: number,
+  type: ListingEventType,
+  payload: Record<string, unknown> = {},
+): Promise<void> {
+  try {
+    await storage.recordEvent({ listingId, type, payload });
+  } catch (error) {
+    console.error(`Failed to record ${type} event for listing ${listingId}:`, error);
+  }
+}
+
+function diffChangedFields(
+  before: ListingView,
+  patch: UpdateListing,
+): string[] {
+  const changed: string[] = [];
+  for (const key of Object.keys(patch) as Array<keyof UpdateListing>) {
+    const next = patch[key];
+    if (next === undefined) continue;
+    const prev = (before as Record<string, unknown>)[key as string];
+    if (Array.isArray(next) || Array.isArray(prev)) {
+      if (JSON.stringify(next ?? []) !== JSON.stringify(prev ?? [])) changed.push(key as string);
+    } else if (prev !== next) {
+      changed.push(key as string);
+    }
+  }
+  return changed;
+}
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 type ApifyItem = Record<string, unknown>;
@@ -863,13 +915,34 @@ async function scrapeListingFromUrl(url: string, pageText?: string): Promise<{
   return { listing: parseListingFromHtml(url, html, publishedDate), source: "direct" };
 }
 
-const refreshDeps: RefreshDeps = {
-  getListing: (id) => storage.getListing(id),
-  scrape: async (url) => (await scrapeListingFromUrl(url)).listing,
-  applyRefreshedFields: (id, scraped, metadata) =>
-    storage.applyRefreshedFields(id, scraped, metadata),
-  updateListing: (id, update) => storage.updateListing(id, update),
-};
+function createRefreshDeps(): RefreshDeps {
+  let source: "pageText" | "apify" | "direct" | "unknown" = "unknown";
+
+  return {
+    getListing: (id) => storage.getListing(id),
+    scrape: async (url) => {
+      const result = await scrapeListingFromUrl(url);
+      source = result.source;
+      return result.listing;
+    },
+    applyRefreshedFields: async (id, scraped, metadata) => {
+      const updated = await storage.applyRefreshedFields(id, scraped, metadata);
+      if (updated) {
+        await recordEventSafe(id, "listing.refreshed", { source });
+      }
+      return updated;
+    },
+    updateListing: async (id, update) => {
+      const updated = await storage.updateListing(id, update);
+      if (updated && update.lastRefreshStatus === "failed") {
+        await recordEventSafe(id, "listing.refresh_failed", {
+          error: typeof update.refreshError === "string" ? update.refreshError.slice(0, 200) : "Unknown refresh failure",
+        });
+      }
+      return updated;
+    },
+  };
+}
 
 function formatZodError(error: ZodError): string {
   return error.issues.map((issue) => issue.message).join("; ");
@@ -947,7 +1020,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/listings", async (req, res) => {
     try {
       const listing = insertListingSchema.parse(req.body);
-      res.status(201).json(await storage.createListing(listing));
+      const saved = await storage.createListing(listing);
+      await recordEventSafe(saved.id, "listing.created", {
+        source: "manual",
+        link: saved.link,
+      });
+      res.status(201).json(saved);
     } catch (error) {
       res.status(400).json({ message: error instanceof ZodError ? formatZodError(error) : "Invalid listing" });
     }
@@ -961,6 +1039,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (canonicalLink) {
         const existing = await storage.findListingByCanonicalLink(canonicalLink);
         if (existing) {
+          await recordEventSafe(existing.id, "listing.import_duplicate", {
+            canonicalLink,
+          });
           res.status(200).json({ ...existing, listing: existing, duplicate: true });
           return;
         }
@@ -969,6 +1050,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (pageText?.trim()) {
         const parsed = parseListingFromText(url, pageText);
         const saved = await storage.createListing({ ...parsed, canonicalLink });
+        await recordEventSafe(saved.id, "listing.imported", {
+          source: "pageText",
+          link: saved.link,
+        });
         res.status(201).json({ ...saved, listing: saved, duplicate: false });
         return;
       }
@@ -976,6 +1061,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (process.env.APIFY_TOKEN) {
         const parsed = await importWithApify(url);
         const saved = await storage.createListing({ ...parsed, canonicalLink });
+        await recordEventSafe(saved.id, "listing.imported", {
+          source: "apify",
+          link: saved.link,
+        });
         res.status(201).json({ ...saved, listing: saved, duplicate: false });
         return;
       }
@@ -986,6 +1075,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ...parsed,
         canonicalLink,
         parseStatus: `${parsed.parseStatus}${source === "direct" ? "" : ` via ${source}`}`,
+      });
+      await recordEventSafe(saved.id, "listing.imported", {
+        source,
+        link: saved.link,
       });
       res.status(201).json({ ...saved, listing: saved, duplicate: false });
     } catch (error) {
@@ -1012,11 +1105,45 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const listing = updateListingSchema.parse(req.body);
+      const before = await storage.getListing(id);
       const updated = await storage.updateListing(id, listing);
       if (!updated) {
         res.status(404).json({ message: "Listing not found" });
         return;
       }
+
+      const changedFields = before ? diffChangedFields(before, listing) : Object.keys(listing);
+      if (changedFields.length > 0) {
+        const statusChanges = changedFields.filter((field) =>
+          (STATUS_UPDATE_FIELDS as string[]).includes(field),
+        );
+        const ratingChanges = changedFields.filter((field) =>
+          (RATING_UPDATE_FIELDS as string[]).includes(field),
+        );
+        const otherChanges = changedFields.filter(
+          (field) =>
+            !(STATUS_UPDATE_FIELDS as string[]).includes(field) &&
+            !(RATING_UPDATE_FIELDS as string[]).includes(field),
+        );
+
+        if (statusChanges.length > 0) {
+          const payload: Record<string, unknown> = { fields: statusChanges };
+          if (statusChanges.includes("availability")) {
+            payload.availability = { from: before?.availability, to: updated.availability };
+          }
+          if (statusChanges.includes("workflowStatus")) {
+            payload.workflowStatus = { from: before?.workflowStatus, to: updated.workflowStatus };
+          }
+          await recordEventSafe(id, "listing.status_changed", payload);
+        }
+        if (ratingChanges.length > 0) {
+          await recordEventSafe(id, "listing.rating_changed", { fields: ratingChanges });
+        }
+        if (otherChanges.length > 0 || (statusChanges.length === 0 && ratingChanges.length === 0)) {
+          await recordEventSafe(id, "listing.updated", { fields: changedFields });
+        }
+      }
+
       res.json(updated);
     } catch (error) {
       res.status(400).json({ message: error instanceof ZodError ? formatZodError(error) : "Invalid listing update" });
@@ -1067,7 +1194,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const results: BulkRefreshItem[] = [...skippedByMissing];
 
     for (const candidate of candidates) {
-      const outcome = await refreshListing(candidate.id, refreshDeps);
+      const outcome = await refreshListing(candidate.id, createRefreshDeps());
       if (outcome.status === "not_found") {
         results.push({ id: candidate.id, status: "skipped", error: "Listing not found" });
         continue;
@@ -1102,7 +1229,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return;
     }
 
-    const outcome: SingleRefreshOutcome = await refreshListing(id, refreshDeps);
+    const outcome: SingleRefreshOutcome = await refreshListing(id, createRefreshDeps());
     if (outcome.status === "not_found") {
       res.status(404).json({ message: "Listing not found" });
       return;
@@ -1117,7 +1244,38 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return;
     }
     const deleted = await storage.deleteListing(id);
+    if (deleted) {
+      await recordEventSafe(id, "listing.deleted", {});
+    }
     res.status(deleted ? 204 : 404).end();
+  });
+
+  app.use("/api/listing-events", (req, res, next) => {
+    if (hasAccess(req)) {
+      next();
+      return;
+    }
+    res.status(401).json({ message: "Password required" });
+  });
+
+  app.get("/api/listing-events", async (req, res) => {
+    try {
+      const query = listingEventsQuerySchema.parse(req.query);
+      const events = await storage.listEvents({
+        afterId: query.after,
+        limit: query.limit,
+      });
+      const latestId = events.length > 0 ? events[events.length - 1].id : await storage.latestEventId();
+      res.json({
+        events,
+        latestId,
+        hasMore: typeof query.limit === "number" && events.length === query.limit,
+      });
+    } catch (error) {
+      res.status(400).json({
+        message: error instanceof ZodError ? formatZodError(error) : "Invalid query",
+      });
+    }
   });
 
   return httpServer;
