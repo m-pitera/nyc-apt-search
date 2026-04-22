@@ -2,7 +2,12 @@ import type { Express } from "express";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import crypto from "node:crypto";
-import { importUrlSchema, insertListingSchema, updateListingSchema } from "@shared/schema";
+import {
+  canonicalizeStreetEasyUrl,
+  importUrlSchema,
+  insertListingSchema,
+  updateListingSchema,
+} from "@shared/schema";
 import type { InsertListing } from "@shared/schema";
 import { storage } from "./storage";
 import { ZodError } from "zod";
@@ -897,17 +902,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/listings/import", async (req, res) => {
     try {
       const { url, pageText } = importUrlSchema.parse(req.body);
+
+      const canonicalLink = canonicalizeStreetEasyUrl(url);
+      if (canonicalLink) {
+        const existing = await storage.findListingByCanonicalLink(canonicalLink);
+        if (existing) {
+          res.status(200).json({ ...existing, listing: existing, duplicate: true });
+          return;
+        }
+      }
+
       if (pageText?.trim()) {
         const parsed = parseListingFromText(url, pageText);
-        const saved = await storage.createListing(parsed);
-        res.status(201).json(saved);
+        const saved = await storage.createListing({ ...parsed, canonicalLink });
+        res.status(201).json({ ...saved, listing: saved, duplicate: false });
         return;
       }
 
       if (process.env.APIFY_TOKEN) {
         const parsed = await importWithApify(url);
-        const saved = await storage.createListing(parsed);
-        res.status(201).json(saved);
+        const saved = await storage.createListing({ ...parsed, canonicalLink });
+        res.status(201).json({ ...saved, listing: saved, duplicate: false });
         return;
       }
 
@@ -915,9 +930,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const parsed = parseListingFromHtml(url, html, publishedDate);
       const saved = await storage.createListing({
         ...parsed,
+        canonicalLink,
         parseStatus: `${parsed.parseStatus}${source === "direct" ? "" : ` via ${source}`}`,
       });
-      res.status(201).json(saved);
+      res.status(201).json({ ...saved, listing: saved, duplicate: false });
     } catch (error) {
       if (error instanceof ZodError) {
         res.status(400).json({ message: formatZodError(error) });

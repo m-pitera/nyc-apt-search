@@ -343,19 +343,26 @@ function ImportPanel({ count, onImported }: { count: number; onImported: () => v
   const importMutation = useMutation({
     mutationFn: async (values: ImportFormValues) => {
       const response = await apiRequest("POST", "/api/listings/import", values);
-      return (await response.json()) as ListingView;
+      return (await response.json()) as ListingView & { duplicate?: boolean };
     },
-    onSuccess: (listing) => {
+    onSuccess: (result) => {
+      const { duplicate, listing: _nested, ...listing } = result as ListingView & {
+        duplicate?: boolean;
+        listing?: ListingView;
+      };
+      void _nested;
       queryClient.setQueryData<ListingView[]>(["/api/listings"], (current = []) => [
-        listing,
+        listing as ListingView,
         ...current.filter((row) => row.id !== listing.id),
       ]);
       queryClient.invalidateQueries({ queryKey: ["/api/listings"] });
       onImported();
       form.reset({ url: "", pageText: "" });
       toast({
-        title: "Listing added",
-        description: "Added to the table and cleared filters so the new row is visible.",
+        title: duplicate ? "Listing already imported" : "Listing added",
+        description: duplicate
+          ? "Showing the existing row — no new scrape was performed."
+          : "Added to the table and cleared filters so the new row is visible.",
       });
     },
     onError: (error) => {

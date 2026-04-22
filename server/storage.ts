@@ -1,4 +1,4 @@
-import { listings } from "@shared/schema";
+import { listings, canonicalizeStreetEasyUrl } from "@shared/schema";
 import type { InsertListing, Listing, ListingView, UpdateListing } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -13,6 +13,7 @@ sqlite.exec(`
   CREATE TABLE IF NOT EXISTS listings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     link TEXT NOT NULL,
+    canonical_link TEXT NOT NULL DEFAULT '',
     neighborhood TEXT NOT NULL DEFAULT '',
     borough TEXT NOT NULL DEFAULT '',
     building_title TEXT NOT NULL DEFAULT '',
@@ -82,6 +83,25 @@ addMissingColumn("bb_crab_overall_rating", "bb_crab_overall_rating INTEGER NOT N
 addMissingColumn("bb_lizard_comment", "bb_lizard_comment TEXT NOT NULL DEFAULT ''");
 addMissingColumn("bb_crab_comment", "bb_crab_comment TEXT NOT NULL DEFAULT ''");
 addMissingColumn("rating", "rating INTEGER NOT NULL DEFAULT 0");
+addMissingColumn("canonical_link", "canonical_link TEXT NOT NULL DEFAULT ''");
+
+function backfillCanonicalLinks() {
+  const rows = sqlite
+    .prepare("SELECT id, link, canonical_link FROM listings WHERE canonical_link = ''")
+    .all() as Array<{ id: number; link: string; canonical_link: string }>;
+  if (!rows.length) return;
+  const update = sqlite.prepare("UPDATE listings SET canonical_link = ? WHERE id = ?");
+  const tx = sqlite.transaction(() => {
+    for (const row of rows) {
+      const canonical = canonicalizeStreetEasyUrl(row.link);
+      if (canonical) update.run(canonical, row.id);
+    }
+  });
+  tx();
+}
+backfillCanonicalLinks();
+
+sqlite.exec("CREATE INDEX IF NOT EXISTS idx_listings_canonical_link ON listings(canonical_link);");
 
 function normalizeAmenities(value: unknown): string {
   if (Array.isArray(value)) {
@@ -140,6 +160,7 @@ function toDbValues(input: InsertListing | UpdateListing): Partial<DbInsertListi
 
 export interface IStorage {
   listListings(): Promise<ListingView[]>;
+  findListingByCanonicalLink(canonicalLink: string): Promise<ListingView | undefined>;
   createListing(listing: InsertListing): Promise<ListingView>;
   updateListing(id: number, listing: UpdateListing): Promise<ListingView | undefined>;
   deleteListing(id: number): Promise<boolean>;
@@ -150,9 +171,18 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(listings).orderBy(desc(listings.id)).all().map(toView);
   }
 
+  async findListingByCanonicalLink(canonicalLink: string): Promise<ListingView | undefined> {
+    if (!canonicalLink) return undefined;
+    const row = db.select().from(listings).where(eq(listings.canonicalLink, canonicalLink)).get();
+    return row ? toView(row) : undefined;
+  }
+
   async createListing(insertListing: InsertListing): Promise<ListingView> {
+    const canonicalLink =
+      insertListing.canonicalLink || canonicalizeStreetEasyUrl(insertListing.link || "");
     const values = toDbValues({
       ...insertListing,
+      canonicalLink,
       createdAt: insertListing.createdAt || new Date().toISOString(),
     }) as DbInsertListing;
     return toView(db.insert(listings).values(values).returning().get());

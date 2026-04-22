@@ -5,6 +5,7 @@ import { z } from "zod";
 export const listings = sqliteTable("listings", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   link: text("link").notNull(),
+  canonicalLink: text("canonical_link").notNull().default(""),
   neighborhood: text("neighborhood").notNull().default(""),
   borough: text("borough").notNull().default(""),
   buildingTitle: text("building_title").notNull().default(""),
@@ -56,10 +57,34 @@ export const updateListingSchema = insertListingSchema.partial().extend({
   amenities: z.union([z.string(), z.array(z.string())]).optional(),
 });
 
+const STREETEASY_HOSTS = new Set(["streeteasy.com", "www.streeteasy.com"]);
+
+export function isStreetEasyHost(host: string): boolean {
+  return STREETEASY_HOSTS.has(host.toLowerCase());
+}
+
+export function canonicalizeStreetEasyUrl(value: string): string {
+  if (typeof value !== "string" || !value.trim()) return "";
+  let parsed: URL;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    return "";
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (!isStreetEasyHost(host)) return "";
+  const normalizedHost = host === "www.streeteasy.com" ? "streeteasy.com" : host;
+  let path = parsed.pathname || "/";
+  if (path.length > 1 && path.endsWith("/")) {
+    path = path.replace(/\/+$/, "");
+  }
+  return `https://${normalizedHost}${path}`;
+}
+
 export const importUrlSchema = z.object({
   url: z.string().url().refine((value) => {
     try {
-      return new URL(value).hostname.replace(/^www\./, "") === "streeteasy.com";
+      return isStreetEasyHost(new URL(value).hostname);
     } catch {
       return false;
     }
