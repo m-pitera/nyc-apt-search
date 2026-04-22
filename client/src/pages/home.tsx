@@ -157,11 +157,62 @@ const columnWidths: Partial<Record<DisplayFieldKey, string>> = {
   contactPhone: "w-[150px]",
 };
 
-function averageRating(listing: Pick<ListingView, "bbLizardRating" | "bbCrabRating">): string {
-  const ratings = [Number(listing.bbLizardRating) || 0, Number(listing.bbCrabRating) || 0].filter((value) => value > 0);
-  if (!ratings.length) return "";
+function formatAverage(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function averageFromNumbers(values: number[]): number {
+  const ratings = values.map((value) => Number(value) || 0).filter((value) => value > 0);
+  if (!ratings.length) return 0;
   const average = ratings.reduce((sum, value) => sum + value, 0) / ratings.length;
-  return Number.isInteger(average) ? String(average) : average.toFixed(1);
+  return average;
+}
+
+function personAverageRating(
+  listing: Pick<
+    ListingView,
+    | "bbLizardRating"
+    | "bbLizardLocationRating"
+    | "bbLizardLayoutRating"
+    | "bbLizardOverallRating"
+    | "bbCrabRating"
+    | "bbCrabLocationRating"
+    | "bbCrabLayoutRating"
+    | "bbCrabOverallRating"
+  >,
+  person: "lizard" | "crab",
+): number {
+  const categoryAverage =
+    person === "lizard"
+      ? averageFromNumbers([
+          listing.bbLizardLocationRating,
+          listing.bbLizardLayoutRating,
+          listing.bbLizardOverallRating,
+        ])
+      : averageFromNumbers([
+          listing.bbCrabLocationRating,
+          listing.bbCrabLayoutRating,
+          listing.bbCrabOverallRating,
+        ]);
+  if (categoryAverage) return categoryAverage;
+  return Number(person === "lizard" ? listing.bbLizardRating : listing.bbCrabRating) || 0;
+}
+
+function averageRating(
+  listing: Pick<
+    ListingView,
+    | "bbLizardRating"
+    | "bbLizardLocationRating"
+    | "bbLizardLayoutRating"
+    | "bbLizardOverallRating"
+    | "bbCrabRating"
+    | "bbCrabLocationRating"
+    | "bbCrabLayoutRating"
+    | "bbCrabOverallRating"
+  >,
+): string {
+  const average = averageFromNumbers([personAverageRating(listing, "lizard"), personAverageRating(listing, "crab")]);
+  return average ? formatAverage(average) : "";
 }
 
 function parseNumber(value: string): number {
@@ -211,7 +262,19 @@ function csvEscape(value: unknown): string {
 }
 
 function createCsv(listings: ListingView[]): string {
-  const ratingHeaders = ["bb-lizard rating", "bb-lizard comment", "bb-crab rating", "bb-crab comment", "Average rating"];
+  const ratingHeaders = [
+    "bb-lizard location rating",
+    "bb-lizard layout rating",
+    "bb-lizard overall rating",
+    "bb-lizard average rating",
+    "bb-lizard comment",
+    "bb-crab location rating",
+    "bb-crab layout rating",
+    "bb-crab overall rating",
+    "bb-crab average rating",
+    "bb-crab comment",
+    "Average rating",
+  ];
   const headers = [...fieldLabels.map(([, label]) => label), ...ratingHeaders];
   const rows = listings.map((listing) =>
     [
@@ -220,9 +283,15 @@ function createCsv(listings: ListingView[]): string {
       if (type === "boolean") return listing[key] ? "TRUE" : "FALSE";
       return String(listing[key] ?? "");
       }),
-      Number(listing.bbLizardRating) ? String(listing.bbLizardRating) : "",
+      Number(listing.bbLizardLocationRating) ? String(listing.bbLizardLocationRating) : "",
+      Number(listing.bbLizardLayoutRating) ? String(listing.bbLizardLayoutRating) : "",
+      Number(listing.bbLizardOverallRating) ? String(listing.bbLizardOverallRating) : "",
+      personAverageRating(listing, "lizard") ? formatAverage(personAverageRating(listing, "lizard")) : "",
       listing.bbLizardComment || "",
-      Number(listing.bbCrabRating) ? String(listing.bbCrabRating) : "",
+      Number(listing.bbCrabLocationRating) ? String(listing.bbCrabLocationRating) : "",
+      Number(listing.bbCrabLayoutRating) ? String(listing.bbCrabLayoutRating) : "",
+      Number(listing.bbCrabOverallRating) ? String(listing.bbCrabOverallRating) : "",
+      personAverageRating(listing, "crab") ? formatAverage(personAverageRating(listing, "crab")) : "",
       listing.bbCrabComment || "",
       averageRating(listing),
     ],
@@ -496,9 +565,9 @@ function RatingPicker({
   testId: string;
 }) {
   return (
-    <div className="space-y-1">
-      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
-      <div className="flex flex-wrap gap-1" role="radiogroup" aria-label={label} data-testid={testId}>
+    <div className="grid items-center gap-2 sm:grid-cols-[80px_auto]">
+      <p className="text-xs font-medium leading-tight text-foreground">{label}</p>
+      <div className="flex shrink-0 gap-1" role="radiogroup" aria-label={label} data-testid={testId}>
         {[1, 2, 3, 4, 5].map((rating) => {
           const selected = Number(value) === rating;
           return (
@@ -521,6 +590,70 @@ function RatingPicker({
   );
 }
 
+function PersonRatingEditor({
+  label,
+  person,
+  values,
+  comment,
+  onValuesChange,
+  onCommentChange,
+  commentTestId,
+  placeholder,
+}: {
+  label: string;
+  person: "lizard" | "crab";
+  values: {
+    location: number;
+    layout: number;
+    overall: number;
+  };
+  comment: string;
+  onValuesChange: (values: { location: number; layout: number; overall: number }) => void;
+  onCommentChange: (value: string) => void;
+  commentTestId: string;
+  placeholder: string;
+}) {
+  const personAverage = averageFromNumbers([values.location, values.layout, values.overall]);
+  return (
+    <div className="rounded-lg border border-border bg-muted/20 p-3" data-testid={`panel-rating-${person}`}>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold">{label}</p>
+        <p className="text-xs text-muted-foreground">
+          Avg <span className="font-semibold tabular-nums text-foreground">{personAverage ? formatAverage(personAverage) : "—"}</span>
+        </p>
+      </div>
+      <div className="grid gap-2">
+        <RatingPicker
+          label="Location"
+          value={values.location}
+          onChange={(location) => onValuesChange({ ...values, location })}
+          testId={`rating-${person}-location`}
+        />
+        <RatingPicker
+          label="Layout"
+          value={values.layout}
+          onChange={(layout) => onValuesChange({ ...values, layout })}
+          testId={`rating-${person}-layout`}
+        />
+        <RatingPicker
+          label="Overall"
+          value={values.overall}
+          onChange={(overall) => onValuesChange({ ...values, overall })}
+          testId={`rating-${person}-overall`}
+        />
+      </div>
+      <Textarea
+        value={comment}
+        onChange={(event) => onCommentChange(event.target.value)}
+        rows={2}
+        className="mt-3 min-h-16 resize-y text-sm"
+        placeholder={placeholder}
+        data-testid={commentTestId}
+      />
+    </div>
+  );
+}
+
 function RatingCell({
   listing,
   disabled,
@@ -532,82 +665,158 @@ function RatingCell({
     id: number,
     values: {
       bbLizardRating: number;
+      bbLizardLocationRating: number;
+      bbLizardLayoutRating: number;
+      bbLizardOverallRating: number;
       bbCrabRating: number;
+      bbCrabLocationRating: number;
+      bbCrabLayoutRating: number;
+      bbCrabOverallRating: number;
       bbLizardComment?: string;
       bbCrabComment?: string;
     },
-  ) => void;
+  ) => Promise<unknown> | unknown;
 }) {
-  const lizard = Number(listing.bbLizardRating) || 0;
-  const crab = Number(listing.bbCrabRating) || 0;
   const average = averageRating(listing);
+  const lizardAverage = personAverageRating(listing, "lizard");
+  const crabAverage = personAverageRating(listing, "crab");
+  const [lizardRatings, setLizardRatings] = useState({
+    location: Number(listing.bbLizardLocationRating) || 0,
+    layout: Number(listing.bbLizardLayoutRating) || 0,
+    overall: Number(listing.bbLizardOverallRating) || Number(listing.bbLizardRating) || 0,
+  });
+  const [crabRatings, setCrabRatings] = useState({
+    location: Number(listing.bbCrabLocationRating) || 0,
+    layout: Number(listing.bbCrabLayoutRating) || 0,
+    overall: Number(listing.bbCrabOverallRating) || Number(listing.bbCrabRating) || 0,
+  });
   const [lizardComment, setLizardComment] = useState(listing.bbLizardComment || "");
   const [crabComment, setCrabComment] = useState(listing.bbCrabComment || "");
+  const [isSavingRatings, setIsSavingRatings] = useState(false);
+  const [ratingsSaved, setRatingsSaved] = useState(false);
+  const isSaving = disabled || isSavingRatings;
 
   useEffect(() => {
+    setLizardRatings({
+      location: Number(listing.bbLizardLocationRating) || 0,
+      layout: Number(listing.bbLizardLayoutRating) || 0,
+      overall: Number(listing.bbLizardOverallRating) || Number(listing.bbLizardRating) || 0,
+    });
+    setCrabRatings({
+      location: Number(listing.bbCrabLocationRating) || 0,
+      layout: Number(listing.bbCrabLayoutRating) || 0,
+      overall: Number(listing.bbCrabOverallRating) || Number(listing.bbCrabRating) || 0,
+    });
     setLizardComment(listing.bbLizardComment || "");
     setCrabComment(listing.bbCrabComment || "");
-  }, [listing.bbCrabComment, listing.bbLizardComment]);
+    setRatingsSaved(false);
+  }, [
+    listing.bbCrabComment,
+    listing.bbCrabLayoutRating,
+    listing.bbCrabLocationRating,
+    listing.bbCrabOverallRating,
+    listing.bbCrabRating,
+    listing.bbLizardComment,
+    listing.bbLizardLayoutRating,
+    listing.bbLizardLocationRating,
+    listing.bbLizardOverallRating,
+    listing.bbLizardRating,
+  ]);
+
+  const saveRatings = async () => {
+    setIsSavingRatings(true);
+    setRatingsSaved(false);
+    try {
+      await onChange(listing.id, {
+        bbLizardRating: lizardRatings.overall,
+        bbLizardLocationRating: lizardRatings.location,
+        bbLizardLayoutRating: lizardRatings.layout,
+        bbLizardOverallRating: lizardRatings.overall,
+        bbCrabRating: crabRatings.overall,
+        bbCrabLocationRating: crabRatings.location,
+        bbCrabLayoutRating: crabRatings.layout,
+        bbCrabOverallRating: crabRatings.overall,
+        bbLizardComment: lizardComment,
+        bbCrabComment: crabComment,
+      });
+      setRatingsSaved(true);
+    } finally {
+      setIsSavingRatings(false);
+    }
+  };
 
   return (
-    <div className={`space-y-3 ${disabled ? "pointer-events-none opacity-60" : ""}`} data-testid={`cell-rating-${listing.id}`}>
-      <div className="rounded-md border border-border bg-primary/5 px-2 py-1.5">
-        <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Average</p>
-        <p className="text-lg font-semibold tabular-nums" data-testid={`text-average-rating-${listing.id}`}>
-          {average || "—"}
-        </p>
+    <div className={disabled ? "opacity-60" : ""} data-testid={`cell-rating-${listing.id}`}>
+      <div className="rounded-md border border-border bg-primary/5 px-2 py-2">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Avg</p>
+          <p className="text-base font-semibold tabular-nums" data-testid={`text-average-rating-${listing.id}`}>
+            {average || "—"}
+          </p>
+        </div>
+        <div className="mt-1 grid grid-cols-2 gap-1 text-[10px] text-muted-foreground">
+          <span>Lizard {lizardAverage ? formatAverage(lizardAverage) : "—"}</span>
+          <span>Crab {crabAverage ? formatAverage(crabAverage) : "—"}</span>
+        </div>
       </div>
-      <RatingPicker
-        label="bb-lizard"
-        value={lizard}
-        onChange={(value) => onChange(listing.id, { bbLizardRating: value, bbCrabRating: crab })}
-        testId={`rating-lizard-${listing.id}`}
-      />
-      <div className="space-y-1">
-        <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">bb-lizard comment</p>
-        <Textarea
-          value={lizardComment}
-          onChange={(event) => setLizardComment(event.target.value)}
-          rows={2}
-          className="min-h-16 resize-y text-xs"
-          placeholder="Add bb-lizard notes..."
-          data-testid={`textarea-lizard-comment-${listing.id}`}
-        />
-      </div>
-      <RatingPicker
-        label="bb-crab"
-        value={crab}
-        onChange={(value) => onChange(listing.id, { bbLizardRating: lizard, bbCrabRating: value })}
-        testId={`rating-crab-${listing.id}`}
-      />
-      <div className="space-y-1">
-        <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">bb-crab comment</p>
-        <Textarea
-          value={crabComment}
-          onChange={(event) => setCrabComment(event.target.value)}
-          rows={2}
-          className="min-h-16 resize-y text-xs"
-          placeholder="Add bb-crab notes..."
-          data-testid={`textarea-crab-comment-${listing.id}`}
-        />
-      </div>
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        className="w-full"
-        onClick={() =>
-          onChange(listing.id, {
-            bbLizardRating: lizard,
-            bbCrabRating: crab,
-            bbLizardComment: lizardComment,
-            bbCrabComment: crabComment,
-          })
-        }
-        data-testid={`button-save-rating-comments-${listing.id}`}
-      >
-        Save comments
-      </Button>
+      <Dialog>
+        <DialogTrigger asChild>
+          <Button type="button" size="sm" variant="outline" className="mt-2 h-7 w-full text-xs" data-testid={`button-rate-${listing.id}`}>
+            Rate
+          </Button>
+        </DialogTrigger>
+        <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Rate apartment</DialogTitle>
+            <DialogDescription>
+              {listing.buildingTitle || listing.neighborhood || "Listing"}
+              {listing.rent ? ` · ${listing.rent}` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between rounded-lg border border-border bg-primary/5 px-3 py-2">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Combined average</p>
+              <p className="text-lg font-semibold tabular-nums">{average || "—"}</p>
+            </div>
+            <PersonRatingEditor
+              label="bb-lizard"
+              person="lizard"
+              values={lizardRatings}
+              onValuesChange={setLizardRatings}
+              comment={lizardComment}
+              onCommentChange={setLizardComment}
+              commentTestId={`textarea-lizard-comment-${listing.id}`}
+              placeholder="bb-lizard notes..."
+            />
+            <PersonRatingEditor
+              label="bb-crab"
+              person="crab"
+              values={crabRatings}
+              onValuesChange={setCrabRatings}
+              comment={crabComment}
+              onCommentChange={setCrabComment}
+              commentTestId={`textarea-crab-comment-${listing.id}`}
+              placeholder="bb-crab notes..."
+            />
+            <Button
+              type="button"
+              className="w-full"
+              disabled={isSaving}
+              onClick={saveRatings}
+              data-testid={`button-save-ratings-${listing.id}`}
+            >
+              {isSaving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+              {isSaving ? "Saving ratings..." : "Save ratings"}
+            </Button>
+            {ratingsSaved ? (
+              <p className="flex items-center justify-center gap-1 text-sm font-medium text-primary" data-testid={`text-ratings-saved-${listing.id}`}>
+                <Check className="size-4" />
+                Ratings saved
+              </p>
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -722,7 +931,13 @@ function ListingTable({
       const response = await apiRequest("PATCH", `/api/listings/${values.id}`, {
         ...values,
         bbLizardRating: Number(values.bbLizardRating) || 0,
+        bbLizardLocationRating: Number(values.bbLizardLocationRating) || 0,
+        bbLizardLayoutRating: Number(values.bbLizardLayoutRating) || 0,
+        bbLizardOverallRating: Number(values.bbLizardOverallRating) || 0,
         bbCrabRating: Number(values.bbCrabRating) || 0,
+        bbCrabLocationRating: Number(values.bbCrabLocationRating) || 0,
+        bbCrabLayoutRating: Number(values.bbCrabLayoutRating) || 0,
+        bbCrabOverallRating: Number(values.bbCrabOverallRating) || 0,
         amenities: values.amenities
           .split(/\n|,/)
           .map((item) => item.trim())
@@ -742,25 +957,55 @@ function ListingTable({
     mutationFn: async ({
       id,
       bbLizardRating,
+      bbLizardLocationRating,
+      bbLizardLayoutRating,
+      bbLizardOverallRating,
       bbCrabRating,
+      bbCrabLocationRating,
+      bbCrabLayoutRating,
+      bbCrabOverallRating,
       bbLizardComment,
       bbCrabComment,
     }: {
       id: number;
       bbLizardRating: number;
+      bbLizardLocationRating: number;
+      bbLizardLayoutRating: number;
+      bbLizardOverallRating: number;
       bbCrabRating: number;
+      bbCrabLocationRating: number;
+      bbCrabLayoutRating: number;
+      bbCrabOverallRating: number;
       bbLizardComment?: string;
       bbCrabComment?: string;
     }) => {
       const response = await apiRequest("PATCH", `/api/listings/${id}`, {
         bbLizardRating,
+        bbLizardLocationRating,
+        bbLizardLayoutRating,
+        bbLizardOverallRating,
         bbCrabRating,
+        bbCrabLocationRating,
+        bbCrabLayoutRating,
+        bbCrabOverallRating,
         ...(bbLizardComment !== undefined ? { bbLizardComment } : {}),
         ...(bbCrabComment !== undefined ? { bbCrabComment } : {}),
       });
       return (await response.json()) as ListingView;
     },
-    onMutate: async ({ id, bbLizardRating, bbCrabRating, bbLizardComment, bbCrabComment }) => {
+    onMutate: async ({
+      id,
+      bbLizardRating,
+      bbLizardLocationRating,
+      bbLizardLayoutRating,
+      bbLizardOverallRating,
+      bbCrabRating,
+      bbCrabLocationRating,
+      bbCrabLayoutRating,
+      bbCrabOverallRating,
+      bbLizardComment,
+      bbCrabComment,
+    }) => {
       await queryClient.cancelQueries({ queryKey: ["/api/listings"] });
       const previous = queryClient.getQueryData<ListingView[]>(["/api/listings"]);
       queryClient.setQueryData<ListingView[]>(["/api/listings"], (current = []) =>
@@ -769,7 +1014,13 @@ function ListingTable({
             ? {
                 ...listing,
                 bbLizardRating,
+                bbLizardLocationRating,
+                bbLizardLayoutRating,
+                bbLizardOverallRating,
                 bbCrabRating,
+                bbCrabLocationRating,
+                bbCrabLayoutRating,
+                bbCrabOverallRating,
                 ...(bbLizardComment !== undefined ? { bbLizardComment } : {}),
                 ...(bbCrabComment !== undefined ? { bbCrabComment } : {}),
               }
@@ -777,6 +1028,9 @@ function ListingTable({
         ),
       );
       return { previous };
+    },
+    onSuccess: () => {
+      toast({ title: "Ratings saved", description: "Category ratings and comments are updated." });
     },
     onError: (_error, _variables, context) => {
       if (context?.previous) {
@@ -971,7 +1225,7 @@ function ListingTable({
                         <RatingCell
                           listing={listing}
                           disabled={ratingMutation.isPending}
-                          onChange={(id, values) => ratingMutation.mutate({ id, ...values })}
+                          onChange={(id, values) => ratingMutation.mutateAsync({ id, ...values })}
                         />
                       </TableCell>
                       {fieldLabels.map(([key, label, type]) => (

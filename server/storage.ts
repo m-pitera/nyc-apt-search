@@ -38,7 +38,13 @@ sqlite.exec(`
     latitude TEXT NOT NULL DEFAULT '',
     longitude TEXT NOT NULL DEFAULT '',
     bb_lizard_rating INTEGER NOT NULL DEFAULT 0,
+    bb_lizard_location_rating INTEGER NOT NULL DEFAULT 0,
+    bb_lizard_layout_rating INTEGER NOT NULL DEFAULT 0,
+    bb_lizard_overall_rating INTEGER NOT NULL DEFAULT 0,
     bb_crab_rating INTEGER NOT NULL DEFAULT 0,
+    bb_crab_location_rating INTEGER NOT NULL DEFAULT 0,
+    bb_crab_layout_rating INTEGER NOT NULL DEFAULT 0,
+    bb_crab_overall_rating INTEGER NOT NULL DEFAULT 0,
     bb_lizard_comment TEXT NOT NULL DEFAULT '',
     bb_crab_comment TEXT NOT NULL DEFAULT '',
     rating INTEGER NOT NULL DEFAULT 0,
@@ -66,7 +72,13 @@ addMissingColumn("contact_phone", "contact_phone TEXT NOT NULL DEFAULT ''");
 addMissingColumn("latitude", "latitude TEXT NOT NULL DEFAULT ''");
 addMissingColumn("longitude", "longitude TEXT NOT NULL DEFAULT ''");
 addMissingColumn("bb_lizard_rating", "bb_lizard_rating INTEGER NOT NULL DEFAULT 0");
+addMissingColumn("bb_lizard_location_rating", "bb_lizard_location_rating INTEGER NOT NULL DEFAULT 0");
+addMissingColumn("bb_lizard_layout_rating", "bb_lizard_layout_rating INTEGER NOT NULL DEFAULT 0");
+addMissingColumn("bb_lizard_overall_rating", "bb_lizard_overall_rating INTEGER NOT NULL DEFAULT 0");
 addMissingColumn("bb_crab_rating", "bb_crab_rating INTEGER NOT NULL DEFAULT 0");
+addMissingColumn("bb_crab_location_rating", "bb_crab_location_rating INTEGER NOT NULL DEFAULT 0");
+addMissingColumn("bb_crab_layout_rating", "bb_crab_layout_rating INTEGER NOT NULL DEFAULT 0");
+addMissingColumn("bb_crab_overall_rating", "bb_crab_overall_rating INTEGER NOT NULL DEFAULT 0");
 addMissingColumn("bb_lizard_comment", "bb_lizard_comment TEXT NOT NULL DEFAULT ''");
 addMissingColumn("bb_crab_comment", "bb_crab_comment TEXT NOT NULL DEFAULT ''");
 addMissingColumn("rating", "rating INTEGER NOT NULL DEFAULT 0");

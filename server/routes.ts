@@ -413,7 +413,13 @@ async function mapApifyItemToListing(url: string, item: ApifyItem): Promise<Inse
     latitude,
     longitude,
     bbLizardRating: 0,
+    bbLizardLocationRating: 0,
+    bbLizardLayoutRating: 0,
+    bbLizardOverallRating: 0,
     bbCrabRating: 0,
+    bbCrabLocationRating: 0,
+    bbCrabLayoutRating: 0,
+    bbCrabOverallRating: 0,
     rating: 0,
     parseStatus: missing.length
       ? `Imported via Apify (${missing.map(([field]) => field).join(", ")} unresolved).${commuteStatus}`
@@ -686,7 +692,13 @@ function parseListingFromHtml(url: string, html: string, publishedDate?: string)
     latitude: "",
     longitude: "",
     bbLizardRating: 0,
+    bbLizardLocationRating: 0,
+    bbLizardLayoutRating: 0,
+    bbLizardOverallRating: 0,
     bbCrabRating: 0,
+    bbCrabLocationRating: 0,
+    bbCrabLayoutRating: 0,
+    bbCrabOverallRating: 0,
     rating: 0,
     parseStatus: missing.length
       ? `Imported with ${missing.map(([field]) => field).join(", ")} unresolved. Edit the row if StreetEasy hid those fields.`
