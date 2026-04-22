@@ -6,10 +6,20 @@ import {
   canonicalizeStreetEasyUrl,
   importUrlSchema,
   insertListingSchema,
+  refreshAllRequestSchema,
   updateListingSchema,
 } from "@shared/schema";
-import type { InsertListing } from "@shared/schema";
+import type { InsertListing, ListingView, RefreshAllRequest } from "@shared/schema";
 import { annotateNeedsReview } from "@shared/needs-review";
+import {
+  filterRefreshEligible,
+  refreshListing,
+  summarizeBulkRefresh,
+  type BulkRefreshItem,
+  type BulkRefreshResponse,
+  type RefreshDeps,
+  type SingleRefreshOutcome,
+} from "@shared/refresh";
 import { storage } from "./storage";
 import { ZodError } from "zod";
 
@@ -433,6 +443,11 @@ async function mapApifyItemToListing(url: string, item: ApifyItem): Promise<Inse
     availability: "active",
     workflowStatus: "new",
     createdAt: new Date().toISOString(),
+    lastScrapedAt: new Date().toISOString(),
+    lastRefreshAttemptAt: "",
+    lastRefreshStatus: "never",
+    refreshError: "",
+    lastSeenAvailableAt: "",
   };
 }
 
@@ -714,6 +729,11 @@ function parseListingFromHtml(url: string, html: string, publishedDate?: string)
     availability: "active",
     workflowStatus: "new",
     createdAt: new Date().toISOString(),
+    lastScrapedAt: new Date().toISOString(),
+    lastRefreshAttemptAt: "",
+    lastRefreshStatus: "never",
+    refreshError: "",
+    lastSeenAvailableAt: "",
   };
 }
 
@@ -826,6 +846,30 @@ async function importWithApify(url: string): Promise<InsertListing> {
 
   return mapApifyItemToListing(url, item);
 }
+
+async function scrapeListingFromUrl(url: string, pageText?: string): Promise<{
+  listing: InsertListing;
+  source: "pageText" | "apify" | "direct";
+}> {
+  if (pageText?.trim()) {
+    return { listing: parseListingFromText(url, pageText), source: "pageText" };
+  }
+
+  if (process.env.APIFY_TOKEN) {
+    return { listing: await importWithApify(url), source: "apify" };
+  }
+
+  const { html, publishedDate } = await fetchStreetEasy(url);
+  return { listing: parseListingFromHtml(url, html, publishedDate), source: "direct" };
+}
+
+const refreshDeps: RefreshDeps = {
+  getListing: (id) => storage.getListing(id),
+  scrape: async (url) => (await scrapeListingFromUrl(url)).listing,
+  applyRefreshedFields: (id, scraped, metadata) =>
+    storage.applyRefreshedFields(id, scraped, metadata),
+  updateListing: (id, update) => storage.updateListing(id, update),
+};
 
 function formatZodError(error: ZodError): string {
   return error.issues.map((issue) => issue.message).join("; ");
@@ -977,6 +1021,93 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (error) {
       res.status(400).json({ message: error instanceof ZodError ? formatZodError(error) : "Invalid listing update" });
     }
+  });
+
+  app.post("/api/listings/refresh", async (req, res) => {
+    let request: RefreshAllRequest;
+    try {
+      request = refreshAllRequestSchema.parse(req.body ?? {});
+    } catch (error) {
+      res.status(400).json({ message: error instanceof ZodError ? formatZodError(error) : "Invalid request" });
+      return;
+    }
+
+    const all = await storage.listListings();
+    const allIds = new Set(all.map((listing) => listing.id));
+    const skippedByMissing: BulkRefreshItem[] = [];
+    const skippedByIneligibility: BulkRefreshItem[] = [];
+    let candidates: ListingView[];
+
+    if (request.listingIds?.length) {
+      const ids = new Set(request.listingIds);
+      candidates = all.filter((listing) => ids.has(listing.id));
+      for (const id of request.listingIds) {
+        if (!allIds.has(id)) {
+          skippedByMissing.push({ id, status: "skipped", error: "Listing not found" });
+        }
+      }
+    } else {
+      const filterOptions = {
+        minAverageRating: request.minAverageRating,
+        availability: request.availability,
+      };
+      candidates = filterRefreshEligible(all, filterOptions);
+      const eligibleIds = new Set(candidates.map((listing) => listing.id));
+      for (const listing of all) {
+        if (!eligibleIds.has(listing.id)) {
+          skippedByIneligibility.push({ id: listing.id, status: "skipped", error: "Not eligible" });
+        }
+      }
+    }
+
+    if (typeof request.limit === "number") {
+      candidates = candidates.slice(0, request.limit);
+    }
+
+    const results: BulkRefreshItem[] = [...skippedByMissing];
+
+    for (const candidate of candidates) {
+      const outcome = await refreshListing(candidate.id, refreshDeps);
+      if (outcome.status === "not_found") {
+        results.push({ id: candidate.id, status: "skipped", error: "Listing not found" });
+        continue;
+      }
+
+      const listingIsStale =
+        outcome.listing?.lastRefreshStatus === "stale" ||
+        outcome.listing?.availability === "stale";
+      if (outcome.status === "refreshed" && listingIsStale) {
+        results.push({ id: candidate.id, status: "stale" });
+      } else {
+        results.push({
+          id: candidate.id,
+          status: outcome.status,
+          error: outcome.error,
+        });
+      }
+    }
+
+    if (!request.listingIds?.length) {
+      results.push(...skippedByIneligibility);
+    }
+
+    const response: BulkRefreshResponse = summarizeBulkRefresh(results);
+    res.json(response);
+  });
+
+  app.post("/api/listings/:id/refresh", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      res.status(400).json({ message: "Invalid listing id" });
+      return;
+    }
+
+    const outcome: SingleRefreshOutcome = await refreshListing(id, refreshDeps);
+    if (outcome.status === "not_found") {
+      res.status(404).json({ message: "Listing not found" });
+      return;
+    }
+    res.json({ status: outcome.status, listing: outcome.listing, error: outcome.error });
   });
 
   app.delete("/api/listings/:id", async (req, res) => {
