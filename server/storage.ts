@@ -1,8 +1,21 @@
-import { listings, canonicalizeStreetEasyUrl, USER_OWNED_LISTING_FIELDS } from "@shared/schema";
-import type { InsertListing, Listing, ListingView, UpdateListing } from "@shared/schema";
+import {
+  listings,
+  listingEvents,
+  canonicalizeStreetEasyUrl,
+  USER_OWNED_LISTING_FIELDS,
+} from "@shared/schema";
+import type {
+  InsertListing,
+  Listing,
+  ListingEvent,
+  ListingEventType,
+  ListingEventView,
+  ListingView,
+  UpdateListing,
+} from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
-import { eq, desc } from "drizzle-orm";
+import { and, asc, desc, eq, gt } from "drizzle-orm";
 
 const sqlite = new Database("data.db");
 sqlite.pragma("journal_mode = WAL");
@@ -127,6 +140,18 @@ backfillCanonicalLinks();
 
 sqlite.exec("CREATE INDEX IF NOT EXISTS idx_listings_canonical_link ON listings(canonical_link);");
 
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS listing_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    listing_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}'
+  );
+`);
+sqlite.exec("CREATE INDEX IF NOT EXISTS idx_listing_events_listing_id ON listing_events(listing_id);");
+sqlite.exec("CREATE INDEX IF NOT EXISTS idx_listing_events_id ON listing_events(id);");
+
 function normalizeAmenities(value: unknown): string {
   if (Array.isArray(value)) {
     return JSON.stringify(value.map((item) => String(item).trim()).filter(Boolean));
@@ -192,6 +217,26 @@ export function stripUserOwnedFields(
   return result as Partial<InsertListing>;
 }
 
+function toEventView(event: ListingEvent): ListingEventView {
+  let payload: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(event.payloadJson);
+    payload = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    payload = {};
+  }
+  const { payloadJson: _payloadJson, ...rest } = event;
+  return { ...rest, payload };
+}
+
+export interface RecordEventInput {
+  listingId: number;
+  type: ListingEventType;
+  payload?: Record<string, unknown>;
+}
+
 export interface IStorage {
   listListings(): Promise<ListingView[]>;
   getListing(id: number): Promise<ListingView | undefined>;
@@ -204,6 +249,13 @@ export interface IStorage {
     metadata: Partial<UpdateListing>,
   ): Promise<ListingView | undefined>;
   deleteListing(id: number): Promise<boolean>;
+  recordEvent(input: RecordEventInput): Promise<ListingEventView>;
+  listEvents(options?: {
+    afterId?: number;
+    listingId?: number;
+    limit?: number;
+  }): Promise<ListingEventView[]>;
+  latestEventId(): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -254,6 +306,53 @@ export class DatabaseStorage implements IStorage {
   async deleteListing(id: number): Promise<boolean> {
     const result = db.delete(listings).where(eq(listings.id, id)).run();
     return result.changes > 0;
+  }
+
+  async recordEvent(input: RecordEventInput): Promise<ListingEventView> {
+    const row = db
+      .insert(listingEvents)
+      .values({
+        listingId: input.listingId,
+        type: input.type,
+        createdAt: new Date().toISOString(),
+        payloadJson: JSON.stringify(input.payload ?? {}),
+      })
+      .returning()
+      .get();
+    return toEventView(row);
+  }
+
+  async listEvents(options: {
+    afterId?: number;
+    listingId?: number;
+    limit?: number;
+  } = {}): Promise<ListingEventView[]> {
+    const filters = [] as ReturnType<typeof eq>[];
+    if (typeof options.afterId === "number") {
+      filters.push(gt(listingEvents.id, options.afterId));
+    }
+    if (typeof options.listingId === "number") {
+      filters.push(eq(listingEvents.listingId, options.listingId));
+    }
+    const where = filters.length === 0
+      ? undefined
+      : filters.length === 1
+        ? filters[0]
+        : and(...filters);
+    const limit = typeof options.limit === "number" ? options.limit : 500;
+    const base = db.select().from(listingEvents);
+    const filtered = where ? base.where(where) : base;
+    return filtered.orderBy(asc(listingEvents.id)).limit(limit).all().map(toEventView);
+  }
+
+  async latestEventId(): Promise<number> {
+    const row = db
+      .select({ id: listingEvents.id })
+      .from(listingEvents)
+      .orderBy(desc(listingEvents.id))
+      .limit(1)
+      .get();
+    return row?.id ?? 0;
   }
 }
 
