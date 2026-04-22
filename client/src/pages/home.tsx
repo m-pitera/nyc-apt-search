@@ -313,12 +313,6 @@ function downloadCsv(listings: ListingView[]) {
   URL.revokeObjectURL(url);
 }
 
-function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
-  if (/failed|unresolved|manual/i.test(status)) return "secondary";
-  if (/imported/i.test(status)) return "default";
-  return "outline";
-}
-
 function ThemeToggle() {
   const [dark, setDark] = useState(() =>
     typeof window !== "undefined" ? window.matchMedia("(prefers-color-scheme: dark)").matches : false,
@@ -1207,9 +1201,6 @@ function ListingTable({
                       {sort.key === "averageRating" ? <span>{sort.direction === "asc" ? "↑" : "↓"}</span> : null}
                     </button>
                   </TableHead>
-                  <TableHead className="w-[180px] bg-muted/40 px-2 py-2 text-[10px] font-semibold uppercase leading-tight tracking-wide">
-                    Status
-                  </TableHead>
                   <TableHead className="w-[110px] bg-muted/40 px-2 py-2 text-[10px] font-semibold uppercase leading-tight tracking-wide">
                     Actions
                   </TableHead>
@@ -1271,11 +1262,6 @@ function ListingTable({
                         <span className="block text-xs font-semibold tabular-nums leading-tight" data-testid={`text-average-rating-column-${listing.id}`}>
                           {averageRating(listing) || "—"}
                         </span>
-                      </TableCell>
-                      <TableCell className="bg-card px-2 py-3 align-top">
-                        <Badge variant={statusVariant(listing.parseStatus)} className="whitespace-normal px-1.5 text-left text-[10px] leading-tight" data-testid={`status-${listing.id}`}>
-                          {listing.parseStatus || "Manual"}
-                        </Badge>
                       </TableCell>
                       <TableCell className="bg-card px-2 py-3 align-top">
                         {isEditing ? (
