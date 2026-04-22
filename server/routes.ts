@@ -11,7 +11,15 @@ import {
 } from "@shared/schema";
 import type { InsertListing, ListingView, RefreshAllRequest } from "@shared/schema";
 import { annotateNeedsReview } from "@shared/needs-review";
-import { filterRefreshEligible } from "@shared/refresh";
+import {
+  filterRefreshEligible,
+  refreshListing,
+  summarizeBulkRefresh,
+  type BulkRefreshItem,
+  type BulkRefreshResponse,
+  type RefreshDeps,
+  type SingleRefreshOutcome,
+} from "@shared/refresh";
 import { storage } from "./storage";
 import { ZodError } from "zod";
 
@@ -855,46 +863,13 @@ async function scrapeListingFromUrl(url: string, pageText?: string): Promise<{
   return { listing: parseListingFromHtml(url, html, publishedDate), source: "direct" };
 }
 
-type RefreshOutcome =
-  | { status: "not_found"; listing?: undefined }
-  | { status: "refreshed" | "failed" | "skipped"; listing: ListingView | undefined };
-
-async function refreshListingById(id: number): Promise<RefreshOutcome> {
-  const existing = await storage.getListing(id);
-  if (!existing) return { status: "not_found" };
-
-  const url = existing.canonicalLink || existing.link;
-  const now = new Date().toISOString();
-
-  if (!url) {
-    const updated = await storage.updateListing(id, {
-      lastRefreshAttemptAt: now,
-      lastRefreshStatus: "failed",
-      refreshError: "Listing has no link to refresh from",
-    });
-    return { status: "failed", listing: updated };
-  }
-
-  try {
-    const { listing: scraped } = await scrapeListingFromUrl(url);
-    const updated = await storage.applyRefreshedFields(id, scraped, {
-      lastScrapedAt: now,
-      lastRefreshAttemptAt: now,
-      lastRefreshStatus: "refreshed",
-      refreshError: "",
-      lastSeenAvailableAt: now,
-    });
-    return { status: "refreshed", listing: updated };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown refresh failure";
-    const updated = await storage.updateListing(id, {
-      lastRefreshAttemptAt: now,
-      lastRefreshStatus: "failed",
-      refreshError: message.slice(0, 500),
-    });
-    return { status: "failed", listing: updated };
-  }
-}
+const refreshDeps: RefreshDeps = {
+  getListing: (id) => storage.getListing(id),
+  scrape: async (url) => (await scrapeListingFromUrl(url)).listing,
+  applyRefreshedFields: (id, scraped, metadata) =>
+    storage.applyRefreshedFields(id, scraped, metadata),
+  updateListing: (id, update) => storage.updateListing(id, update),
+};
 
 function formatZodError(error: ZodError): string {
   return error.issues.map((issue) => issue.message).join("; ");
@@ -1058,52 +1033,66 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     const all = await storage.listListings();
+    const allIds = new Set(all.map((listing) => listing.id));
+    const skippedByMissing: BulkRefreshItem[] = [];
+    const skippedByIneligibility: BulkRefreshItem[] = [];
     let candidates: ListingView[];
+
     if (request.listingIds?.length) {
       const ids = new Set(request.listingIds);
       candidates = all.filter((listing) => ids.has(listing.id));
+      for (const id of request.listingIds) {
+        if (!allIds.has(id)) {
+          skippedByMissing.push({ id, status: "skipped", error: "Listing not found" });
+        }
+      }
     } else {
-      candidates = filterRefreshEligible(all, {
+      const filterOptions = {
         minAverageRating: request.minAverageRating,
         availability: request.availability,
-      });
+      };
+      candidates = filterRefreshEligible(all, filterOptions);
+      const eligibleIds = new Set(candidates.map((listing) => listing.id));
+      for (const listing of all) {
+        if (!eligibleIds.has(listing.id)) {
+          skippedByIneligibility.push({ id: listing.id, status: "skipped", error: "Not eligible" });
+        }
+      }
     }
 
     if (typeof request.limit === "number") {
       candidates = candidates.slice(0, request.limit);
     }
 
-    const results: Array<{
-      id: number;
-      status: "refreshed" | "failed" | "skipped";
-      error?: string;
-    }> = [];
+    const results: BulkRefreshItem[] = [...skippedByMissing];
 
     for (const candidate of candidates) {
-      try {
-        const outcome = await refreshListingById(candidate.id);
-        if (outcome.status === "not_found") {
-          results.push({ id: candidate.id, status: "skipped", error: "Listing not found" });
-        } else {
-          results.push({ id: candidate.id, status: outcome.status });
-        }
-      } catch (error) {
+      const outcome = await refreshListing(candidate.id, refreshDeps);
+      if (outcome.status === "not_found") {
+        results.push({ id: candidate.id, status: "skipped", error: "Listing not found" });
+        continue;
+      }
+
+      const listingIsStale =
+        outcome.listing?.lastRefreshStatus === "stale" ||
+        outcome.listing?.availability === "stale";
+      if (outcome.status === "refreshed" && listingIsStale) {
+        results.push({ id: candidate.id, status: "stale" });
+      } else {
         results.push({
           id: candidate.id,
-          status: "failed",
-          error: error instanceof Error ? error.message : "Unknown error",
+          status: outcome.status,
+          error: outcome.error,
         });
       }
     }
 
-    const summary = {
-      attempted: results.length,
-      refreshed: results.filter((r) => r.status === "refreshed").length,
-      failed: results.filter((r) => r.status === "failed").length,
-      skipped: results.filter((r) => r.status === "skipped").length,
-    };
+    if (!request.listingIds?.length) {
+      results.push(...skippedByIneligibility);
+    }
 
-    res.json({ summary, results });
+    const response: BulkRefreshResponse = summarizeBulkRefresh(results);
+    res.json(response);
   });
 
   app.post("/api/listings/:id/refresh", async (req, res) => {
@@ -1113,18 +1102,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return;
     }
 
-    try {
-      const outcome = await refreshListingById(id);
-      if (outcome.status === "not_found") {
-        res.status(404).json({ message: "Listing not found" });
-        return;
-      }
-      res.json({ status: outcome.status, listing: outcome.listing });
-    } catch (error) {
-      res.status(502).json({
-        message: error instanceof Error ? error.message : "Refresh failed",
-      });
+    const outcome: SingleRefreshOutcome = await refreshListing(id, refreshDeps);
+    if (outcome.status === "not_found") {
+      res.status(404).json({ message: "Listing not found" });
+      return;
     }
+    res.json({ status: outcome.status, listing: outcome.listing, error: outcome.error });
   });
 
   app.delete("/api/listings/:id", async (req, res) => {
