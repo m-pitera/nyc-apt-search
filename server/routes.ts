@@ -429,6 +429,8 @@ async function mapApifyItemToListing(url: string, item: ApifyItem): Promise<Inse
     parseStatus: missing.length
       ? `Imported via Apify (${missing.map(([field]) => field).join(", ")} unresolved).${commuteStatus}`
       : `Imported via Apify.${commuteStatus}`.trim(),
+    availability: "active",
+    workflowStatus: "new",
     createdAt: new Date().toISOString(),
   };
 }
@@ -708,6 +710,8 @@ function parseListingFromHtml(url: string, html: string, publishedDate?: string)
     parseStatus: missing.length
       ? `Imported with ${missing.map(([field]) => field).join(", ")} unresolved. Edit the row if StreetEasy hid those fields.`
       : "Imported",
+    availability: "active",
+    workflowStatus: "new",
     createdAt: new Date().toISOString(),
   };
 }
