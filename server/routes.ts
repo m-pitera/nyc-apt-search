@@ -7,6 +7,15 @@ import { storage } from "./storage";
 import { ZodError } from "zod";
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+type ApifyItem = Record<string, unknown>;
+type PriceHistory = {
+  date?: string;
+  price?: number | string;
+  description?: string;
+  event?: string;
+};
+
+const DEFAULT_APIFY_ACTOR = "memo23/streeteasy-ppr";
 
 const REQUEST_HEADERS = {
   "User-Agent":
@@ -45,6 +54,193 @@ function safeJsonParse(value: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+function readString(item: ApifyItem, keys: string[]): string {
+  for (const key of keys) {
+    const value = item[key];
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      const cleaned = cleanText(value);
+      if (cleaned) return cleaned;
+    }
+  }
+  return "";
+}
+
+function readNumberLike(item: ApifyItem, keys: string[]): string {
+  for (const key of keys) {
+    const value = item[key];
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    if (typeof value === "string") {
+      const cleaned = cleanText(value);
+      if (cleaned && /[\d.]/.test(cleaned)) return cleaned;
+    }
+  }
+  return "";
+}
+
+function parseJsonArray<T>(value: unknown): T[] {
+  if (Array.isArray(value)) return value as T[];
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function formatMoney(value: unknown): string {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `$${Math.round(value).toLocaleString("en-US")}`;
+  }
+  if (typeof value === "string") {
+    const cleaned = cleanText(value);
+    if (!cleaned) return "";
+    const money = cleaned.match(/\$[\d,]+/);
+    if (money) return money[0];
+    const numeric = cleaned.match(/\b\d{3,7}\b/);
+    if (numeric) return `$${Number(numeric[0]).toLocaleString("en-US")}`;
+    return cleaned;
+  }
+  return "";
+}
+
+function rentFromPriceHistory(value: unknown): { rent: string; datePosted: string } {
+  const histories = parseJsonArray<PriceHistory>(value);
+  const listed =
+    histories.find((entry) => String(entry.event || "").toUpperCase() === "LISTED") ||
+    histories.find((entry) => /listed/i.test(String(entry.description || ""))) ||
+    histories[0];
+
+  return {
+    rent: formatMoney(listed?.price),
+    datePosted: listed?.date ? cleanText(listed.date) : "",
+  };
+}
+
+function extractAmenitiesFromApify(item: ApifyItem): string[] {
+  const explicit = allStringsFromJson(item, [
+    "amenities",
+    "amenity",
+    "buildingamenities",
+    "unitamenities",
+    "matchedamenities",
+    "missingamenities",
+  ]);
+  const description = readString(item, [
+    "combineData_rental_description",
+    "listingDescription",
+    "description",
+    "buildingDescription",
+  ]);
+  const inferred = [
+    /\blaundry room\b/i.test(description) && "Laundry room",
+    /\bno broker fee\b/i.test(description) && "No broker fee",
+    /\bfurnished\b/i.test(description) && "Furnished",
+    item.combineData_rental_is_furnished === true && "Furnished",
+  ].filter(Boolean) as string[];
+  return uniq([...parseAmenities(description, [item]), ...explicit, ...inferred]);
+}
+
+function normalizedStreetEasyUrl(value: string, fallback: string): string {
+  if (!value) return fallback;
+  if (/^https?:\/\//i.test(value)) return value;
+  if (value.startsWith("/")) return `https://streeteasy.com${value}`;
+  return fallback;
+}
+
+function mapApifyItemToListing(url: string, item: ApifyItem): InsertListing {
+  const priceHistory = rentFromPriceHistory(item.combineData_rental_price_histories_json);
+  const description = readString(item, [
+    "combineData_rental_description",
+    "listingDescription",
+    "description",
+    "buildingDescription",
+  ]);
+  const amenities = extractAmenitiesFromApify(item);
+  const laundry = parseLaundry(amenities, description);
+  const link = normalizedStreetEasyUrl(
+    readString(item, ["combineData_rental_quick_url", "url", "urlPath", "combineData_rental_url_path", "originalUrl"]),
+    url,
+  );
+  const beds = readNumberLike(item, [
+    "combineData_rental_bedroom_count",
+    "combineData_rental_bedrooms",
+    "bedroomCount",
+    "bedroom_count",
+    "beds",
+  ]);
+  const rooms = readNumberLike(item, [
+    "combineData_rental_anyrooms",
+    "anyrooms",
+    "rooms",
+    "roomCount",
+    "room_count",
+  ]);
+  const fullBaths = readNumberLike(item, [
+    "combineData_rental_full_bathroom_count",
+    "fullBathroomCount",
+    "full_bathroom_count",
+    "baths",
+    "bathrooms",
+  ]);
+  const halfBaths = readNumberLike(item, [
+    "combineData_rental_half_bathroom_count",
+    "halfBathroomCount",
+    "half_bathroom_count",
+  ]);
+  const bath =
+    fullBaths && halfBaths
+      ? String(Number(fullBaths) + Number(halfBaths) / 2).replace(/\.0$/, "")
+      : fullBaths || halfBaths;
+  const sqFt = readNumberLike(item, [
+    "combineData_rental_living_area_size",
+    "livingAreaSize",
+    "living_area_size",
+    "sqft",
+    "squareFeet",
+  ]);
+  const rent = formatMoney(readString(item, ["combineData_rental_price", "price", "rent"])) || priceHistory.rent;
+  const listedAt = readString(item, ["combineData_rental_listed_at", "listedAt", "listed_at"]);
+  const datePosted =
+    priceHistory.datePosted ||
+    (listedAt && !Number.isNaN(new Date(listedAt).valueOf()) ? new Date(listedAt).toISOString().slice(0, 10) : listedAt);
+  const daysOnMarket = readNumberLike(item, ["combineData_rental_days_on_market", "daysOnMarket", "days_on_market"]);
+  const dateWithDays = datePosted && daysOnMarket ? `${datePosted} (${daysOnMarket} days on market)` : datePosted;
+  const missing = [
+    ["rent", rent],
+    ["beds", beds],
+    ["bath", bath],
+    ["sq ft", sqFt],
+  ].filter(([, value]) => !value);
+
+  return {
+    link,
+    neighborhood: readString(item, [
+      "combineData_rental_area_name",
+      "areaName",
+      "area_name",
+      "neighborhood",
+      "address_addressLocality",
+    ]),
+    rent,
+    beds,
+    rooms,
+    roomsDesc: deriveRoomsDesc(beds, rooms, bath, sqFt, description).slice(0, 700),
+    bath,
+    sqFt,
+    pplxDist: "",
+    sevenTwoDist: "",
+    datePosted: dateWithDays,
+    amenities: JSON.stringify(amenities),
+    hasInUnitLaundry: laundry.hasInUnitLaundry,
+    hasInBuildingLaundry: laundry.hasInBuildingLaundry,
+    parseStatus: missing.length
+      ? `Imported via Apify (${missing.map(([field]) => field).join(", ")} unresolved).`
+      : "Imported via Apify",
+    createdAt: new Date().toISOString(),
+  };
 }
 
 function getByPath(root: unknown, wantedKeys: string[]): unknown[] {
@@ -328,6 +524,94 @@ async function fetchStreetEasy(url: string): Promise<{ html: string; source: str
   throw new Error(`StreetEasy returned ${response.status}. The app could not fetch enough page content directly.`);
 }
 
+function apifyActorIdForUrl(actor: string): string {
+  return actor.replace("/", "~");
+}
+
+function buildApifyInput(actor: string, url: string): Record<string, unknown> {
+  if (actor === "memo23/streeteasy-ppr" || actor === "memo23/apify-streeteasy-cheerio") {
+    return {
+      startUrls: [{ url }],
+      maxItems: 1,
+      maxConcurrency: 1,
+      minConcurrency: 1,
+      maxRequestRetries: 3,
+      monitoringMode: false,
+      proxy: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
+    };
+  }
+
+  if (actor === "shahidirfan/streeteasy-scraper") {
+    return {
+      start_url: url,
+      listing_type: "for-rent",
+      results_wanted: 1,
+      max_pages: 1,
+      proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
+    };
+  }
+
+  if (actor === "kawsar/streeteasy-scraper-it-work" || actor === "kawsar/streeteasy-scraper") {
+    return {
+      searchUrl: url,
+      listingType: "for-rent",
+      maxResults: 1,
+      proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
+    };
+  }
+
+  return {
+    startUrls: [{ url }],
+    maxItems: 1,
+    maxResults: 1,
+    proxy: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
+  };
+}
+
+async function importWithApify(url: string): Promise<InsertListing> {
+  const token = process.env.APIFY_TOKEN;
+  if (!token) {
+    throw new Error("APIFY_TOKEN is not configured.");
+  }
+
+  const actor = process.env.APIFY_ACTOR || DEFAULT_APIFY_ACTOR;
+  const endpoint = `https://api.apify.com/v2/acts/${apifyActorIdForUrl(actor)}/run-sync-get-dataset-items?token=${encodeURIComponent(
+    token,
+  )}&timeout=240`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(buildApifyInput(actor, url)),
+  });
+  const bodyText = await response.text();
+
+  if (!response.ok) {
+    let detail = bodyText.slice(0, 500);
+    try {
+      const parsed = JSON.parse(bodyText) as { error?: { message?: string; type?: string } };
+      detail = parsed.error?.message || parsed.error?.type || detail;
+    } catch {
+      // Keep raw detail.
+    }
+    throw new Error(`Apify actor ${actor} failed: ${detail}`);
+  }
+
+  let items: ApifyItem[];
+  try {
+    const parsed = JSON.parse(bodyText);
+    items = Array.isArray(parsed) ? (parsed as ApifyItem[]) : [];
+  } catch {
+    throw new Error(`Apify actor ${actor} returned unreadable JSON.`);
+  }
+
+  const item = items.find((candidate) => !candidate.error && Object.keys(candidate).length > 0);
+  if (!item) {
+    throw new Error(`Apify actor ${actor} returned no listing data for this URL.`);
+  }
+
+  return mapApifyItemToListing(url, item);
+}
+
 function formatZodError(error: ZodError): string {
   return error.issues.map((issue) => issue.message).join("; ");
 }
@@ -356,6 +640,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return;
       }
 
+      if (process.env.APIFY_TOKEN) {
+        const parsed = await importWithApify(url);
+        const saved = await storage.createListing(parsed);
+        res.status(201).json(saved);
+        return;
+      }
+
       const { html, source, publishedDate } = await fetchStreetEasy(url);
       const parsed = parseListingFromHtml(url, html, publishedDate);
       const saved = await storage.createListing({
@@ -368,29 +659,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         res.status(400).json({ message: formatZodError(error) });
         return;
       }
-      const url = typeof req.body?.url === "string" ? req.body.url : "";
-      const placeholder = await storage.createListing({
-        link: url,
-        neighborhood: "",
-        rent: "",
-        beds: "",
-        rooms: "",
-        roomsDesc: "",
-        bath: "",
-        sqFt: "",
-        pplxDist: "",
-        sevenTwoDist: "",
-        datePosted: "",
-        amenities: "[]",
-        hasInUnitLaundry: false,
-        hasInBuildingLaundry: false,
-        parseStatus:
+
+      res.status(409).json({
+        message:
           error instanceof Error
-            ? `Fetch failed: ${error.message}. Row created for manual editing.`
-            : "Fetch failed. Row created for manual editing.",
-        createdAt: new Date().toISOString(),
+            ? `${error.message} Paste the visible StreetEasy listing text into the fallback box and import again.`
+            : "StreetEasy/Apify import failed. Paste the visible listing text into the fallback box and import again.",
       });
-      res.status(201).json(placeholder);
     }
   });
 

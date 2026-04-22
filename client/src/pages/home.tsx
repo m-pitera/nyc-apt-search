@@ -181,7 +181,7 @@ function ImportPanel({ count }: { count: number }) {
     },
     onError: (error) => {
       toast({
-        title: "Could not import",
+        title: "Import needs review",
         description: error instanceof Error ? error.message : "Please check the URL and try again.",
         variant: "destructive",
       });
@@ -195,7 +195,7 @@ function ImportPanel({ count }: { count: number }) {
           <div className="space-y-1">
             <CardTitle className="text-xl tracking-tight">StreetEasy table builder</CardTitle>
             <CardDescription>
-              Paste a listing URL, import whatever StreetEasy exposes, then polish the row directly in the table.
+              Paste a listing URL, import through Apify when configured, then polish the row directly in the table.
             </CardDescription>
           </div>
           <Badge variant="outline" data-testid="text-listing-count">
@@ -375,7 +375,7 @@ function ListingTable({ listings, isLoading }: { listings: ListingView[]; isLoad
           <div>
             <CardTitle className="text-lg">Listing rows</CardTitle>
             <CardDescription>
-              Fields are intentionally editable because StreetEasy can hide values from server-side fetches.
+              Fields are intentionally editable because StreetEasy and third-party scrapers can omit listing-specific values.
             </CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -428,10 +428,10 @@ function ListingTable({ listings, isLoading }: { listings: ListingView[]; isLoad
                       {label}
                     </TableHead>
                   ))}
-                  <TableHead className="sticky right-0 min-w-40 bg-muted/80 text-xs font-semibold uppercase tracking-wide">
+                  <TableHead className="sticky right-28 z-10 min-w-40 bg-muted/80 text-xs font-semibold uppercase tracking-wide">
                     Status
                   </TableHead>
-                  <TableHead className="sticky right-0 min-w-28 bg-muted/80 text-xs font-semibold uppercase tracking-wide">
+                  <TableHead className="sticky right-0 z-10 min-w-28 bg-muted/80 text-xs font-semibold uppercase tracking-wide">
                     Actions
                   </TableHead>
                 </TableRow>
@@ -476,12 +476,12 @@ function ListingTable({ listings, isLoading }: { listings: ListingView[]; isLoad
                           )}
                         </TableCell>
                       ))}
-                      <TableCell className="sticky right-28 bg-card align-top">
+                      <TableCell className="sticky right-28 z-10 bg-card align-top">
                         <Badge variant={statusVariant(listing.parseStatus)} className="max-w-64 whitespace-normal text-left" data-testid={`status-${listing.id}`}>
                           {listing.parseStatus || "Manual"}
                         </Badge>
                       </TableCell>
-                      <TableCell className="sticky right-0 bg-card align-top">
+                      <TableCell className="sticky right-0 z-10 bg-card align-top">
                         {isEditing ? (
                           <div className="flex flex-wrap gap-2">
                             <Button
