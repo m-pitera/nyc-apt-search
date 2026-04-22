@@ -1,4 +1,4 @@
-import { listings, canonicalizeStreetEasyUrl } from "@shared/schema";
+import { listings, canonicalizeStreetEasyUrl, USER_OWNED_LISTING_FIELDS } from "@shared/schema";
 import type { InsertListing, Listing, ListingView, UpdateListing } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -52,7 +52,12 @@ sqlite.exec(`
     parse_status TEXT NOT NULL DEFAULT '',
     availability TEXT NOT NULL DEFAULT 'active',
     workflow_status TEXT NOT NULL DEFAULT 'new',
-    created_at TEXT NOT NULL DEFAULT ''
+    created_at TEXT NOT NULL DEFAULT '',
+    last_scraped_at TEXT NOT NULL DEFAULT '',
+    last_refresh_attempt_at TEXT NOT NULL DEFAULT '',
+    last_refresh_status TEXT NOT NULL DEFAULT 'never',
+    refresh_error TEXT NOT NULL DEFAULT '',
+    last_seen_available_at TEXT NOT NULL DEFAULT ''
   );
 `);
 
@@ -88,6 +93,11 @@ addMissingColumn("rating", "rating INTEGER NOT NULL DEFAULT 0");
 addMissingColumn("canonical_link", "canonical_link TEXT NOT NULL DEFAULT ''");
 addMissingColumn("availability", "availability TEXT NOT NULL DEFAULT 'active'");
 addMissingColumn("workflow_status", "workflow_status TEXT NOT NULL DEFAULT 'new'");
+addMissingColumn("last_scraped_at", "last_scraped_at TEXT NOT NULL DEFAULT ''");
+addMissingColumn("last_refresh_attempt_at", "last_refresh_attempt_at TEXT NOT NULL DEFAULT ''");
+addMissingColumn("last_refresh_status", "last_refresh_status TEXT NOT NULL DEFAULT 'never'");
+addMissingColumn("refresh_error", "refresh_error TEXT NOT NULL DEFAULT ''");
+addMissingColumn("last_seen_available_at", "last_seen_available_at TEXT NOT NULL DEFAULT ''");
 
 function backfillStatusDefaults() {
   sqlite
@@ -172,17 +182,38 @@ function toDbValues(input: InsertListing | UpdateListing): Partial<DbInsertListi
   return values as Partial<DbInsertListing>;
 }
 
+export function stripUserOwnedFields(
+  scraped: Partial<InsertListing>,
+): Partial<InsertListing> {
+  const result: Record<string, unknown> = { ...scraped };
+  for (const field of USER_OWNED_LISTING_FIELDS) {
+    delete result[field];
+  }
+  return result as Partial<InsertListing>;
+}
+
 export interface IStorage {
   listListings(): Promise<ListingView[]>;
+  getListing(id: number): Promise<ListingView | undefined>;
   findListingByCanonicalLink(canonicalLink: string): Promise<ListingView | undefined>;
   createListing(listing: InsertListing): Promise<ListingView>;
   updateListing(id: number, listing: UpdateListing): Promise<ListingView | undefined>;
+  applyRefreshedFields(
+    id: number,
+    scraped: Partial<InsertListing>,
+    metadata: Partial<UpdateListing>,
+  ): Promise<ListingView | undefined>;
   deleteListing(id: number): Promise<boolean>;
 }
 
 export class DatabaseStorage implements IStorage {
   async listListings(): Promise<ListingView[]> {
     return db.select().from(listings).orderBy(desc(listings.id)).all().map(toView);
+  }
+
+  async getListing(id: number): Promise<ListingView | undefined> {
+    const row = db.select().from(listings).where(eq(listings.id, id)).get();
+    return row ? toView(row) : undefined;
   }
 
   async findListingByCanonicalLink(canonicalLink: string): Promise<ListingView | undefined> {
@@ -204,6 +235,18 @@ export class DatabaseStorage implements IStorage {
 
   async updateListing(id: number, updateListing: UpdateListing): Promise<ListingView | undefined> {
     const values = toDbValues(updateListing);
+    const row = db.update(listings).set(values).where(eq(listings.id, id)).returning().get();
+    return row ? toView(row) : undefined;
+  }
+
+  async applyRefreshedFields(
+    id: number,
+    scraped: Partial<InsertListing>,
+    metadata: Partial<UpdateListing>,
+  ): Promise<ListingView | undefined> {
+    const safeScraped = stripUserOwnedFields(scraped);
+    delete (safeScraped as Record<string, unknown>).createdAt;
+    const values = toDbValues({ ...safeScraped, ...metadata });
     const row = db.update(listings).set(values).where(eq(listings.id, id)).returning().get();
     return row ? toView(row) : undefined;
   }

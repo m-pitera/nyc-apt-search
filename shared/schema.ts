@@ -45,10 +45,18 @@ export const listings = sqliteTable("listings", {
   availability: text("availability").notNull().default("active"),
   workflowStatus: text("workflow_status").notNull().default("new"),
   createdAt: text("created_at").notNull().default(""),
+  lastScrapedAt: text("last_scraped_at").notNull().default(""),
+  lastRefreshAttemptAt: text("last_refresh_attempt_at").notNull().default(""),
+  lastRefreshStatus: text("last_refresh_status").notNull().default("never"),
+  refreshError: text("refresh_error").notNull().default(""),
+  lastSeenAvailableAt: text("last_seen_available_at").notNull().default(""),
 });
 
 export const AVAILABILITY_VALUES = ["active", "inactive", "stale"] as const;
 export type Availability = (typeof AVAILABILITY_VALUES)[number];
+
+export const REFRESH_STATUS_VALUES = ["never", "refreshed", "failed", "stale"] as const;
+export type RefreshStatus = (typeof REFRESH_STATUS_VALUES)[number];
 
 export const WORKFLOW_STATUS_VALUES = [
   "new",
@@ -60,6 +68,24 @@ export const WORKFLOW_STATUS_VALUES = [
 ] as const;
 export type WorkflowStatus = (typeof WORKFLOW_STATUS_VALUES)[number];
 
+export const USER_OWNED_LISTING_FIELDS = [
+  "bbLizardRating",
+  "bbLizardLocationRating",
+  "bbLizardLayoutRating",
+  "bbLizardOverallRating",
+  "bbCrabRating",
+  "bbCrabLocationRating",
+  "bbCrabLayoutRating",
+  "bbCrabOverallRating",
+  "bbLizardComment",
+  "bbCrabComment",
+  "rating",
+  "availability",
+  "workflowStatus",
+  "parseStatus",
+] as const;
+export type UserOwnedListingField = (typeof USER_OWNED_LISTING_FIELDS)[number];
+
 const baseInsertListingSchema = createInsertSchema(listings).omit({
   id: true,
 });
@@ -68,13 +94,24 @@ export const insertListingSchema = baseInsertListingSchema.extend({
   amenities: z.union([z.string(), z.array(z.string())]).default("[]"),
   availability: z.enum(AVAILABILITY_VALUES).default("active"),
   workflowStatus: z.enum(WORKFLOW_STATUS_VALUES).default("new"),
+  lastRefreshStatus: z.enum(REFRESH_STATUS_VALUES).default("never"),
 });
 
 export const updateListingSchema = insertListingSchema.partial().extend({
   amenities: z.union([z.string(), z.array(z.string())]).optional(),
   availability: z.enum(AVAILABILITY_VALUES).optional(),
   workflowStatus: z.enum(WORKFLOW_STATUS_VALUES).optional(),
+  lastRefreshStatus: z.enum(REFRESH_STATUS_VALUES).optional(),
 });
+
+export const refreshAllRequestSchema = z.object({
+  minAverageRating: z.number().min(0).max(5).optional(),
+  availability: z.array(z.enum(AVAILABILITY_VALUES)).optional(),
+  limit: z.number().int().positive().max(500).optional(),
+  listingIds: z.array(z.number().int().positive()).optional(),
+});
+
+export type RefreshAllRequest = z.infer<typeof refreshAllRequestSchema>;
 
 const STREETEASY_HOSTS = new Set(["streeteasy.com", "www.streeteasy.com"]);
 
