@@ -1087,7 +1087,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return;
       }
 
-      res.status(409).json({
+      // 502 Bad Gateway: the failure is in our upstream dependency
+      // (Apify or a direct StreetEasy fetch) or in parsing the response
+      // they returned. True duplicates are surfaced earlier as 200 +
+      // `duplicate: true`, so 409 here would only confuse clients into
+      // thinking the listing already exists.
+      res.status(502).json({
         message:
           error instanceof Error
             ? `${error.message} Paste the visible StreetEasy listing text into the fallback box and import again.`
