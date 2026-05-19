@@ -30,6 +30,40 @@ import {
 import { storage } from "./storage";
 import { ZodError } from "zod";
 
+// Structured request logging — every import/refresh entry gets an 8-hex id
+// threaded through the upstream helpers so a single failed scrape can be
+// followed end-to-end in stdout. Errors that previously vanished into a
+// 502 (Apify failures, sparse parses, direct-fetch blocks) are now logged
+// before the response is returned.
+function newReqId(): string {
+  return crypto.randomBytes(4).toString("hex");
+}
+
+function logImport(reqId: string, ...parts: unknown[]): void {
+  console.log(`[import req=${reqId}]`, ...parts);
+}
+
+function logImportError(reqId: string, ...parts: unknown[]): void {
+  console.error(`[import req=${reqId}]`, ...parts);
+}
+
+function logRefresh(reqId: string, ...parts: unknown[]): void {
+  console.log(`[refresh req=${reqId}]`, ...parts);
+}
+
+function logRefreshError(reqId: string, ...parts: unknown[]): void {
+  console.error(`[refresh req=${reqId}]`, ...parts);
+}
+
+function errorMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}
+
 const STATUS_UPDATE_FIELDS: Array<keyof UpdateListing> = ["availability", "workflowStatus", "parseStatus"];
 const RATING_UPDATE_FIELDS: Array<keyof UpdateListing> = [
   "rating",
@@ -800,14 +834,27 @@ function parseListingFromText(url: string, pageText: string): InsertListing {
   };
 }
 
-async function fetchStreetEasy(url: string): Promise<{ html: string; source: string; publishedDate?: string }> {
+async function fetchStreetEasy(
+  url: string,
+  reqId: string,
+): Promise<{ html: string; source: string; publishedDate?: string }> {
+  logImport(reqId, "fetchStreetEasy: GET", url);
   const response = await fetch(url, { headers: REQUEST_HEADERS });
   const html = await response.text();
+  const blocked = /captcha|access denied|just a moment/i.test(html);
+  logImport(
+    reqId,
+    `fetchStreetEasy: status=${response.status} html_length=${html.length} blocked=${blocked}`,
+  );
 
-  if (response.ok && html.length > 500 && !/captcha|access denied|just a moment/i.test(html)) {
+  if (response.ok && html.length > 500 && !blocked) {
     return { html, source: "direct" };
   }
 
+  logImportError(
+    reqId,
+    `fetchStreetEasy: failing (status=${response.status} html_length=${html.length} blocked=${blocked})`,
+  );
   throw new Error(`StreetEasy returned ${response.status}. The app could not fetch enough page content directly.`);
 }
 
@@ -855,9 +902,10 @@ function buildApifyInput(actor: string, url: string): Record<string, unknown> {
   };
 }
 
-async function importWithApify(url: string): Promise<InsertListing> {
+async function importWithApify(url: string, reqId: string): Promise<InsertListing> {
   const token = process.env.APIFY_TOKEN;
   if (!token) {
+    logImportError(reqId, "importWithApify: APIFY_TOKEN not set");
     throw new Error("APIFY_TOKEN is not configured.");
   }
 
@@ -865,12 +913,19 @@ async function importWithApify(url: string): Promise<InsertListing> {
   const endpoint = `https://api.apify.com/v2/acts/${apifyActorIdForUrl(actor)}/run-sync-get-dataset-items?token=${encodeURIComponent(
     token,
   )}&timeout=240`;
+  const t0 = Date.now();
+  logImport(reqId, `importWithApify: POST actor=${actor} url=${url}`);
   const response = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(buildApifyInput(actor, url)),
   });
   const bodyText = await response.text();
+  const elapsedMs = Date.now() - t0;
+  logImport(
+    reqId,
+    `importWithApify: status=${response.status} body_length=${bodyText.length} elapsed_ms=${elapsedMs}`,
+  );
 
   if (!response.ok) {
     let detail = bodyText.slice(0, 500);
@@ -880,6 +935,7 @@ async function importWithApify(url: string): Promise<InsertListing> {
     } catch {
       // Keep raw detail.
     }
+    logImportError(reqId, `importWithApify: actor failed status=${response.status} detail=${detail}`);
     throw new Error(`Apify actor ${actor} failed: ${detail}`);
   }
 
@@ -888,30 +944,41 @@ async function importWithApify(url: string): Promise<InsertListing> {
     const parsed = JSON.parse(bodyText);
     items = Array.isArray(parsed) ? (parsed as ApifyItem[]) : [];
   } catch {
+    logImportError(reqId, "importWithApify: unreadable JSON in response body");
     throw new Error(`Apify actor ${actor} returned unreadable JSON.`);
   }
 
+  logImport(reqId, `importWithApify: items_returned=${items.length}`);
   const item = items.find((candidate) => !candidate.error && Object.keys(candidate).length > 0);
   if (!item) {
+    logImportError(
+      reqId,
+      `importWithApify: no usable item (items=${items.length} all_empty_or_error)`,
+    );
     throw new Error(`Apify actor ${actor} returned no listing data for this URL.`);
   }
 
+  logImport(reqId, `importWithApify: usable item keys=${Object.keys(item).length}`);
   return mapApifyItemToListing(url, item);
 }
 
-async function scrapeListingFromUrl(url: string, pageText?: string): Promise<{
+async function scrapeListingFromUrl(url: string, pageText?: string, reqId?: string): Promise<{
   listing: InsertListing;
   source: "pageText" | "apify" | "direct";
 }> {
+  const rid = reqId ?? newReqId();
   if (pageText?.trim()) {
+    logImport(rid, `scrape: source=pageText url=${url} text_length=${pageText.length}`);
     return { listing: parseListingFromText(url, pageText), source: "pageText" };
   }
 
   if (process.env.APIFY_TOKEN) {
-    return { listing: await importWithApify(url), source: "apify" };
+    logImport(rid, `scrape: source=apify url=${url}`);
+    return { listing: await importWithApify(url, rid), source: "apify" };
   }
 
-  const { html, publishedDate } = await fetchStreetEasy(url);
+  logImport(rid, `scrape: source=direct url=${url}`);
+  const { html, publishedDate } = await fetchStreetEasy(url, rid);
   return { listing: parseListingFromHtml(url, html, publishedDate), source: "direct" };
 }
 
@@ -1032,13 +1099,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.post("/api/listings/import", async (req, res) => {
+    const reqId = newReqId();
+    const t0 = Date.now();
+    let parsedBody: { url?: string; pageText?: string } = {};
     try {
-      const { url, pageText } = importUrlSchema.parse(req.body);
+      const parsedReq = importUrlSchema.parse(req.body);
+      parsedBody = parsedReq;
+      const { url, pageText } = parsedReq;
+      logImport(
+        reqId,
+        `POST /api/listings/import url=${url} has_pageText=${Boolean(pageText?.trim())}`,
+      );
 
       const canonicalLink = canonicalizeStreetEasyUrl(url);
+      logImport(reqId, `canonicalLink=${canonicalLink || "<none>"}`);
       if (canonicalLink) {
         const existing = await storage.findListingByCanonicalLink(canonicalLink);
         if (existing) {
+          logImport(reqId, `duplicate hit listing_id=${existing.id} returning 200`);
           await recordEventSafe(existing.id, "listing.import_duplicate", {
             canonicalLink,
           });
@@ -1050,6 +1128,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (pageText?.trim()) {
         const parsed = parseListingFromText(url, pageText);
         const saved = await storage.createListing({ ...parsed, canonicalLink });
+        logImport(
+          reqId,
+          `saved listing_id=${saved.id} source=pageText parseStatus=${JSON.stringify(saved.parseStatus)} elapsed_ms=${Date.now() - t0}`,
+        );
         await recordEventSafe(saved.id, "listing.imported", {
           source: "pageText",
           link: saved.link,
@@ -1059,8 +1141,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       if (process.env.APIFY_TOKEN) {
-        const parsed = await importWithApify(url);
+        const parsed = await importWithApify(url, reqId);
         const saved = await storage.createListing({ ...parsed, canonicalLink });
+        logImport(
+          reqId,
+          `saved listing_id=${saved.id} source=apify parseStatus=${JSON.stringify(saved.parseStatus)} elapsed_ms=${Date.now() - t0}`,
+        );
         await recordEventSafe(saved.id, "listing.imported", {
           source: "apify",
           link: saved.link,
@@ -1069,13 +1155,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return;
       }
 
-      const { html, source, publishedDate } = await fetchStreetEasy(url);
+      const { html, source, publishedDate } = await fetchStreetEasy(url, reqId);
       const parsed = parseListingFromHtml(url, html, publishedDate);
       const saved = await storage.createListing({
         ...parsed,
         canonicalLink,
         parseStatus: `${parsed.parseStatus}${source === "direct" ? "" : ` via ${source}`}`,
       });
+      logImport(
+        reqId,
+        `saved listing_id=${saved.id} source=${source} parseStatus=${JSON.stringify(saved.parseStatus)} elapsed_ms=${Date.now() - t0}`,
+      );
       await recordEventSafe(saved.id, "listing.imported", {
         source,
         link: saved.link,
@@ -1083,8 +1173,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(201).json({ ...saved, listing: saved, duplicate: false });
     } catch (error) {
       if (error instanceof ZodError) {
+        logImportError(reqId, `zod validation failed: ${formatZodError(error)}`);
         res.status(400).json({ message: formatZodError(error) });
         return;
+      }
+
+      logImportError(
+        reqId,
+        `import failed for url=${parsedBody.url ?? "<unknown>"} elapsed_ms=${Date.now() - t0}: ${errorMessage(error)}`,
+      );
+      if (error instanceof Error && error.stack) {
+        logImportError(reqId, error.stack);
       }
 
       // 502 Bad Gateway: the failure is in our upstream dependency
@@ -1156,13 +1255,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.post("/api/listings/refresh", async (req, res) => {
+    const reqId = newReqId();
+    const t0 = Date.now();
     let request: RefreshAllRequest;
     try {
       request = refreshAllRequestSchema.parse(req.body ?? {});
     } catch (error) {
+      logRefreshError(reqId, `bulk: zod validation failed: ${errorMessage(error)}`);
       res.status(400).json({ message: error instanceof ZodError ? formatZodError(error) : "Invalid request" });
       return;
     }
+    logRefresh(
+      reqId,
+      `POST /api/listings/refresh listingIds=${request.listingIds?.length ?? 0} minAverageRating=${request.minAverageRating ?? "none"} availability=${JSON.stringify(request.availability ?? null)} limit=${request.limit ?? "none"}`,
+    );
 
     const all = await storage.listListings();
     const allIds = new Set(all.map((listing) => listing.id));
@@ -1196,11 +1302,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       candidates = candidates.slice(0, request.limit);
     }
 
+    logRefresh(
+      reqId,
+      `bulk: total=${all.length} candidates=${candidates.length} skipped_missing=${skippedByMissing.length} skipped_ineligible=${skippedByIneligibility.length}`,
+    );
+
     const results: BulkRefreshItem[] = [...skippedByMissing];
 
     for (const candidate of candidates) {
+      const tStart = Date.now();
       const outcome = await refreshListing(candidate.id, createRefreshDeps());
+      const elapsed = Date.now() - tStart;
       if (outcome.status === "not_found") {
+        logRefresh(reqId, `bulk: listing=${candidate.id} not_found elapsed_ms=${elapsed}`);
         results.push({ id: candidate.id, status: "skipped", error: "Listing not found" });
         continue;
       }
@@ -1209,8 +1323,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         outcome.listing?.lastRefreshStatus === "stale" ||
         outcome.listing?.availability === "stale";
       if (outcome.status === "refreshed" && listingIsStale) {
+        logRefresh(reqId, `bulk: listing=${candidate.id} status=stale elapsed_ms=${elapsed}`);
         results.push({ id: candidate.id, status: "stale" });
       } else {
+        if (outcome.status === "failed" || outcome.error) {
+          logRefreshError(
+            reqId,
+            `bulk: listing=${candidate.id} status=${outcome.status} error=${outcome.error ?? "<none>"} elapsed_ms=${elapsed}`,
+          );
+        } else {
+          logRefresh(reqId, `bulk: listing=${candidate.id} status=${outcome.status} elapsed_ms=${elapsed}`);
+        }
         results.push({
           id: candidate.id,
           status: outcome.status,
@@ -1224,20 +1347,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     const response: BulkRefreshResponse = summarizeBulkRefresh(results);
+    logRefresh(
+      reqId,
+      `bulk: done counts=${JSON.stringify(response.counts)} elapsed_ms=${Date.now() - t0}`,
+    );
     res.json(response);
   });
 
   app.post("/api/listings/:id/refresh", async (req, res) => {
+    const reqId = newReqId();
+    const t0 = Date.now();
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
+      logRefreshError(reqId, `single: invalid id=${req.params.id}`);
       res.status(400).json({ message: "Invalid listing id" });
       return;
     }
+    logRefresh(reqId, `POST /api/listings/${id}/refresh`);
 
     const outcome: SingleRefreshOutcome = await refreshListing(id, createRefreshDeps());
     if (outcome.status === "not_found") {
+      logRefresh(reqId, `single: listing=${id} not_found elapsed_ms=${Date.now() - t0}`);
       res.status(404).json({ message: "Listing not found" });
       return;
+    }
+    if (outcome.status === "failed" || outcome.error) {
+      logRefreshError(
+        reqId,
+        `single: listing=${id} status=${outcome.status} error=${outcome.error ?? "<none>"} elapsed_ms=${Date.now() - t0}`,
+      );
+    } else {
+      logRefresh(
+        reqId,
+        `single: listing=${id} status=${outcome.status} elapsed_ms=${Date.now() - t0}`,
+      );
     }
     res.json({ status: outcome.status, listing: outcome.listing, error: outcome.error });
   });
